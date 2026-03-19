@@ -1,0 +1,37 @@
+{
+  "telegram": {
+    "bot_token": "123456789:REPLACE_WITH_YOUR_BOT_TOKEN",
+    "allowed_chat_ids": [123456789],
+    "poll_interval_seconds": 2,
+    "request_timeout_seconds": 30
+  },
+  "codex": {
+    "binary": "codex",
+    "timeout_seconds": 0
+  },
+  "codex_sessions": {
+    "enabled": false,
+    "state_db_path": "~/.codex/state_5.sqlite",
+    "poll_interval_seconds": 2.0,
+    "include_user_messages": false
+  },
+  "runtime": {
+    "state_path": "./state.json",
+    "log_path": "./codex-connector.log",
+    "max_output_chars": 1200
+  },
+  "projects": [
+    {
+      "name": "privsyn",
+      "repo_path": "/Users/you/Documents/GitHub/privsyn",
+      "branch": "main",
+      "notes": "Primary privacy project"
+    },
+    {
+      "name": "course",
+      "repo_path": "/Users/you/Documents/GitHub/data-privacy-course",
+      "branch": "main",
+      "notes": "Course materials and examples"
+    }
+  ]
+}
