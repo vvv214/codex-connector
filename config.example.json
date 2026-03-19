@@ -5,7 +5,8 @@
     "poll_interval_seconds": 2,
     "request_timeout_seconds": 30
   },
-  "codex": {
+  "runner": {
+    "provider": "codex",
     "binary": "codex",
     "timeout_seconds": 0
   },

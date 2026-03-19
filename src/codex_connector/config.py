@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from .models import AppConfig, CodexSessionsConfig, Project, SecurityConfig
+from .models import AppConfig, CodexSessionsConfig, Project, RunnerConfig, SecurityConfig
 
 
 class ConfigError(ValueError):
@@ -105,6 +105,30 @@ def _parse_security(payload: dict[str, Any]) -> SecurityConfig:
     )
 
 
+def _parse_runner(payload: dict[str, Any]) -> RunnerConfig:
+    provider = str(_lookup(payload, ("runner", "provider"), default="codex")).strip().lower() or "codex"
+    binary = _lookup(
+        payload,
+        ("runner", "binary"),
+        ("codex_binary",),
+        ("codex", "binary"),
+        default=provider,
+    )
+    timeout_seconds = _lookup(
+        payload,
+        ("runner", "timeout_seconds"),
+        ("codex_timeout_seconds",),
+        ("codex", "timeout_seconds"),
+        ("codex", "request_timeout_seconds"),
+        default=0,
+    )
+    return RunnerConfig(
+        provider=provider,
+        binary=str(binary).strip() or provider,
+        timeout_seconds=int(timeout_seconds),
+    )
+
+
 def load_config(config_path: str | Path) -> AppConfig:
     path = Path(config_path).expanduser().resolve()
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -132,14 +156,7 @@ def load_config(config_path: str | Path) -> AppConfig:
         ("telegram", "token"),
         default="",
     )
-    codex_binary = _lookup(payload, ("codex_binary",), ("codex", "binary"), default="codex")
-    codex_timeout_seconds = _lookup(
-        payload,
-        ("codex_timeout_seconds",),
-        ("codex", "timeout_seconds"),
-        ("codex", "request_timeout_seconds"),
-        default=0,
-    )
+    runner = _parse_runner(payload)
     poll_timeout_seconds = _lookup(
         payload,
         ("poll_timeout_seconds",),
@@ -170,8 +187,7 @@ def load_config(config_path: str | Path) -> AppConfig:
         projects=projects,
         telegram_bot_token=str(bot_token).strip(),
         allowed_chat_ids=allowed_chat_ids,
-        codex_binary=str(codex_binary).strip() or "codex",
-        codex_timeout_seconds=int(codex_timeout_seconds),
+        runner=runner,
         codex_sessions=codex_sessions,
         security=security,
         poll_timeout_seconds=int(poll_timeout_seconds),

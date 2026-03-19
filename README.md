@@ -15,7 +15,7 @@
 
 > Use Telegram as a thin remote control for the Codex setup you already trust on your laptop.
 >
-> Scope is intentionally narrow: this repo is Telegram-first, local-first, and single-user oriented. If you want Slack, Discord, Matrix, Signal, or a more generic transport layer, fork it or send a focused PR rather than expanding the core into a bot framework.
+> Scope is intentionally narrow: this repo is Telegram-first, local-first, and single-user oriented. The built-in runner is `codex`. If you want Slack, Discord, Matrix, Signal, or another agent CLI, fork it or send a focused PR rather than expanding the core into a framework.
 
 ## Why
 
@@ -33,6 +33,15 @@ Codex is excellent at the desk, but awkward the moment you walk away from your l
 - Optimize for phone use. Updates should be short, readable, and actionable.
 - Stay small. This is a thin control plane over local Codex, not a new agent platform.
 - Prefer opinionated defaults over transport abstraction and plugin sprawl.
+
+## Core Idea
+
+There are only two moving parts in the core:
+
+- `Telegram transport`: receive commands, send short updates, render buttons.
+- `Runner`: turn `new` or `continue` into a local CLI invocation inside a repo.
+
+Today the built-in runner is `codex`. The runner boundary is intentionally small so a fork or focused PR can swap in another local CLI without rewriting the Telegram flow.
 
 ## Demo
 
@@ -139,8 +148,8 @@ Copy `config.example.json` to `config.json` and edit the values for your machine
 The config supports:
 
 - Telegram bot credentials and an allowlist of chat ids
+- A small `runner` section for selecting the local CLI implementation
 - A fixed list of local repositories
-- Optional `codex.timeout_seconds` for long-running Codex tasks
 - Optional realtime session mirroring from local Codex state
 - Optional `security` rules for chat allowlisting and repo validation
 - Optional runtime settings such as `state_path`, `log_path`, and `max_output_chars`
@@ -155,7 +164,8 @@ Example:
     "poll_interval_seconds": 2,
     "request_timeout_seconds": 30
   },
-  "codex": {
+  "runner": {
+    "provider": "codex",
     "binary": "codex",
     "timeout_seconds": 0
   },
@@ -198,6 +208,16 @@ Example:
 | `/help` | Show the command list |
 
 Plain text without a command is treated as `/continue`.
+
+## Extending The Runner
+
+If you want to use another local CLI, the intended customization point is the runner layer:
+
+1. Add a runner implementation next to [codex_adapter.py](src/codex_connector/codex_adapter.py).
+2. Register it in [runner.py](src/codex_connector/runner.py).
+3. Point `config.json` at a different `runner.provider` and `runner.binary`.
+
+The core repo only ships `codex` by default. First-party support for every agent CLI is intentionally out of scope.
 
 ## Realtime Session Mirroring
 
@@ -258,13 +278,14 @@ codex-connector last --config ./config.json --chat-id 390429375
 - Add or update `unittest` coverage for command parsing, state persistence, and Telegram callbacks when behavior changes.
 - Prefer mobile-oriented UX: short intermediate updates, explicit project context, and deterministic callback flows.
 - When adding config surface area, update both [config.example.json](config.example.json) and this README in the same change.
-- If you want another chat transport, the preferred path is a focused fork or a narrowly scoped PR that does not complicate the Telegram path.
+- If you want another chat transport or another runner, the preferred path is a focused fork or a narrowly scoped PR that does not complicate the default Telegram + Codex path.
 
 ## Out Of Scope
 
 - multi-user bot hosting or tenant isolation
 - remote code execution on machines you do not control
 - first-party support for every chat application
+- first-party support for every agent CLI
 - full IDE-style chat history, diff browsing, or rich artifact rendering inside Telegram
 - replacing the local Codex CLI; this project is a thin control plane, not a new agent runtime
 

@@ -6,7 +6,6 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .codex_adapter import CodexAdapter, CodexResult
 from .commands import ParsedMessage, parse_message
 from .config import AppConfig
 from .codex_sessions import CodexSessionMonitor, SessionNotification, load_thread_snapshots
@@ -19,6 +18,7 @@ from .rendering import (
     render_status,
     render_task_result,
 )
+from .runner import Runner, RunnerResult
 from .state import StateStore
 from .telegram import TelegramBotClient, TelegramUpdate
 
@@ -28,7 +28,7 @@ class BridgeService:
         self,
         config: AppConfig,
         store: StateStore,
-        adapter: CodexAdapter,
+        adapter: Runner,
         telegram: TelegramBotClient | None = None,
         logger: logging.Logger | None = None,
     ):
@@ -380,7 +380,7 @@ class BridgeService:
             self._notify(chat_id, render_task_result(task, self.config.max_output_chars), message_id)
         return task
 
-    def _task_from_result(self, task: TaskRun, result: CodexResult) -> TaskRun:
+    def _task_from_result(self, task: TaskRun, result: RunnerResult) -> TaskRun:
         task.status = "done" if result.ok else "failed"
         task.return_code = result.return_code
         task.ended_at = result.ended_at
@@ -389,7 +389,7 @@ class BridgeService:
         task.stderr_tail = result.stderr.strip()[-500:]
         return task
 
-    def _summarize_result(self, result: CodexResult) -> str:
+    def _summarize_result(self, result: RunnerResult) -> str:
         stdout_tail = result.stdout.strip()[-400:]
         stderr_tail = result.stderr.strip()[-400:]
         if result.ok:

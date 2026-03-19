@@ -27,7 +27,7 @@ class ConfigTests(unittest.TestCase):
                             "poll_interval_seconds": 5,
                             "request_timeout_seconds": 11,
                         },
-                        "codex": {"binary": "codex-nested", "timeout_seconds": 600},
+                        "runner": {"provider": "codex", "binary": "codex-nested", "timeout_seconds": 600},
                         "codex_sessions": {
                             "enabled": True,
                             "state_db_path": "./runtime/codex/state_5.sqlite",
@@ -54,6 +54,9 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual(config.telegram_bot_token, "nested-token")
             self.assertEqual(config.allowed_chat_ids, frozenset({111, 222}))
+            self.assertEqual(config.runner.provider, "codex")
+            self.assertEqual(config.runner.binary, "codex-nested")
+            self.assertEqual(config.runner.timeout_seconds, 600)
             self.assertEqual(config.codex_binary, "codex-nested")
             self.assertEqual(config.codex_timeout_seconds, 600)
             self.assertTrue(config.codex_sessions.enabled)
@@ -111,6 +114,28 @@ class ConfigTests(unittest.TestCase):
 
             with self.assertRaises(ConfigError):
                 validate_config(config, for_serve=True)
+
+    def test_loads_legacy_codex_runner_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            repo = root / "repo"
+            repo.mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "codex": {"binary": "codex-legacy", "timeout_seconds": 45},
+                        "projects": [{"name": "alpha", "repo_path": str(repo)}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            self.assertEqual(config.runner.provider, "codex")
+            self.assertEqual(config.runner.binary, "codex-legacy")
+            self.assertEqual(config.runner.timeout_seconds, 45)
 
     def test_validate_config_checks_repo_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

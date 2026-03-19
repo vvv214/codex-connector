@@ -69,7 +69,7 @@ class CliTests(unittest.TestCase):
             explicit_state = root / "override-state.json"
             buffer = io.StringIO()
 
-            with patch("codex_connector.cli.CodexAdapter", FakeAdapter):
+            with patch("codex_connector.cli.create_runner", return_value=FakeAdapter()):
                 with contextlib.redirect_stdout(buffer):
                     exit_code = main(
                         [

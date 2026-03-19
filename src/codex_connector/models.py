@@ -28,6 +28,13 @@ class SecurityConfig:
 
 
 @dataclass(slots=True)
+class RunnerConfig:
+    provider: str = "codex"
+    binary: str = "codex"
+    timeout_seconds: int = 0
+
+
+@dataclass(slots=True)
 class ChatState:
     chat_id: int
     project_name: str
@@ -60,8 +67,7 @@ class AppConfig:
     projects: list[Project]
     telegram_bot_token: str = ""
     allowed_chat_ids: frozenset[int] = field(default_factory=frozenset)
-    codex_binary: str = "codex"
-    codex_timeout_seconds: int = 0
+    runner: RunnerConfig = field(default_factory=RunnerConfig)
     codex_sessions: CodexSessionsConfig = field(default_factory=CodexSessionsConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     poll_timeout_seconds: int = 20
@@ -71,6 +77,14 @@ class AppConfig:
     state_file: Path = Path("state.json")
     default_project_name: str | None = None
     max_output_chars: int = 1200
+
+    @property
+    def codex_binary(self) -> str:
+        return self.runner.binary
+
+    @property
+    def codex_timeout_seconds(self) -> int:
+        return self.runner.timeout_seconds
 
     def project_by_name(self, name: str) -> Project | None:
         for project in self.projects:

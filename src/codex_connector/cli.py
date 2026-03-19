@@ -3,8 +3,8 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .codex_adapter import CodexAdapter
 from .config import apply_overrides, load_config, validate_config
+from .runner import create_runner
 from .service import BridgeService, configure_logging
 from .state import StateStore
 from .telegram import TelegramBotClient
@@ -76,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     logger = configure_logging(config.log_file)
     store = StateStore(config.state_file)
     store.load()
-    adapter = CodexAdapter(binary=config.codex_binary, timeout_seconds=config.codex_timeout_seconds)
+    adapter = create_runner(config)
     telegram = TelegramBotClient(config.telegram_bot_token, timeout_seconds=config.request_timeout_seconds) if config.telegram_bot_token else None
     service = BridgeService(config=config, store=store, adapter=adapter, telegram=telegram, logger=logger)
 
