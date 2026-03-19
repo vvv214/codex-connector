@@ -11,9 +11,11 @@
   <img alt="Local-first" src="https://img.shields.io/badge/runtime-local--first-0F766E" />
 </p>
 
-`codex-connector` is a small bridge that lets you keep using your local `codex` CLI from your phone. It does not move your repos or secrets into the cloud. Telegram is just the control surface; execution still happens on your machine.
+`codex-connector` is a small bridge that lets you keep using your local `codex` CLI from your phone. It does not move your repos or secrets into the cloud. Telegram is the control surface; execution still happens on your machine.
 
 > Use Telegram as a thin remote control for the Codex setup you already trust on your laptop.
+>
+> Scope is intentionally narrow: this repo is Telegram-first, local-first, and single-user oriented. If you want Slack, Discord, Matrix, Signal, or a more generic transport layer, fork it or send a focused PR rather than expanding the core into a bot framework.
 
 ## Why
 
@@ -24,6 +26,13 @@ Codex is excellent at the desk, but awkward the moment you walk away from your l
 - See compact progress updates while Codex is running locally.
 - Mirror desktop Codex sessions back into Telegram.
 - Keep project context aligned with the latest active session.
+
+## Design Goals
+
+- Keep execution local. Repos, secrets, and toolchains stay on your machine.
+- Optimize for phone use. Updates should be short, readable, and actionable.
+- Stay small. This is a thin control plane over local Codex, not a new agent platform.
+- Prefer opinionated defaults over transport abstraction and plugin sprawl.
 
 ## Demo
 
@@ -38,7 +47,11 @@ Bot      Active project: codex-connector
          [• codex-connector] [CoPaw]
          [meta-autoresearch] [dpsgd-pe]
 
-You      /new add a smoke test for project callback buttons
+You      /new
+Bot      New task mode armed for codex-connector. Send the prompt after choosing a project.
+         [• codex-connector] [CoPaw]
+
+You      add a smoke test for project callback buttons
 Bot      Queued new task 71d8b7... for codex-connector
 
 Bot      [codex-connector] callback tests · update
@@ -54,6 +67,13 @@ Bot      [codex-connector] callback tests · completed
 - People already using local Codex who want quick mobile follow-up while away from the keyboard
 - Personal single-user setups where Telegram is only the transport, not the execution environment
 - Workflows that benefit from lightweight session mirroring without exposing repos to a hosted agent
+
+## Not Trying To Be
+
+- a multi-user chatbot service
+- a hosted relay or remote execution layer
+- a cross-platform messaging abstraction for every chat app
+- a replacement for the Codex desktop app or CLI
 
 ## What It Does
 
@@ -106,7 +126,8 @@ flowchart LR
 
    ```text
    /project
-   /new summarize the latest changes
+   /new
+   summarize the latest changes
    /continue tighten the tests
    /status
    ```
@@ -233,15 +254,17 @@ codex-connector last --config ./config.json --chat-id 390429375
 
 ## Contributing
 
-- Keep changes small and local-first; avoid turning this into a hosted service.
+- Keep changes small, local-first, and Telegram-first; avoid turning this into a hosted service or generic chat framework.
 - Add or update `unittest` coverage for command parsing, state persistence, and Telegram callbacks when behavior changes.
 - Prefer mobile-oriented UX: short intermediate updates, explicit project context, and deterministic callback flows.
 - When adding config surface area, update both [config.example.json](config.example.json) and this README in the same change.
+- If you want another chat transport, the preferred path is a focused fork or a narrowly scoped PR that does not complicate the Telegram path.
 
 ## Out Of Scope
 
 - multi-user bot hosting or tenant isolation
 - remote code execution on machines you do not control
+- first-party support for every chat application
 - full IDE-style chat history, diff browsing, or rich artifact rendering inside Telegram
 - replacing the local Codex CLI; this project is a thin control plane, not a new agent runtime
 
