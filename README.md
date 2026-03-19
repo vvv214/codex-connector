@@ -59,40 +59,6 @@ In other words:
 - If you want an always-on multi-channel assistant with broader tooling and automation, OpenClaw is closer.
 - If you want to train or serve your own model stack, nanochat is solving a different problem entirely.
 
-## Demo
-
-Full walkthrough: [docs/demo.md](docs/demo.md)
-
-```text
-You      /project
-Bot      Active project: codex-connector
-         Recent sessions:
-         1. codex-connector | 2026-03-19 10:18:21 | tighten Telegram callback handling
-         2. CoPaw          | 2026-03-19 09:55:03 | review memory routing
-         [• codex-connector] [CoPaw]
-         [meta-autoresearch] [dpsgd-pe]
-
-You      /new
-Bot      New task mode armed for codex-connector. Send the prompt after choosing a project.
-         [• codex-connector] [CoPaw]
-
-You      add a smoke test for project callback buttons
-Bot      Queued new task 71d8b7... for codex-connector
-
-Bot      [codex-connector] callback tests · update
-         added Telegram callback parsing and inline button coverage
-
-Bot      [codex-connector] callback tests · completed
-         Added callback-query support, split long Telegram replies, and
-         kept /project switch buttons wired to the active chat context.
-```
-
-## Best For
-
-- People already using local Codex who want quick mobile follow-up while away from the keyboard
-- Personal single-user setups where Telegram is only the transport, not the execution environment
-- Workflows that benefit from lightweight session mirroring without exposing repos to a hosted agent
-
 ## Not Trying To Be
 
 - a multi-user chatbot service
@@ -100,11 +66,11 @@ Bot      [codex-connector] callback tests · completed
 - a cross-platform messaging abstraction for every chat app
 - a replacement for the Codex desktop app or CLI
 
-## What It Does
+## How It Works
 
 | Capability | What you get |
 | --- | --- |
-| Remote control | `/new`, `/continue`, `/status`, `/last`, and plain-text follow-ups from Telegram |
+| Remote control | Start a new task, continue a session, or check status from Telegram |
 | Project switching | `/project` shows recent sessions and inline buttons for quick switching |
 | New-task picker | `/new` without a prompt opens a project picker and arms the next plain-text message as a fresh session |
 | Session continuity | Plain text defaults to continuing the latest active project context |
@@ -133,13 +99,28 @@ flowchart LR
    python3 -m pip install -e .
    ```
 
-2. Copy the example config.
+2. Create a Telegram bot token and learn your chat id.
 
    ```bash
-   cp config.example.json config.json
+   @BotFather -> /newbot
+   https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
    ```
 
-3. Fill in your Telegram token, chat id, and local project paths.
+3. Ask your local Codex to write the config for you instead of editing JSON by hand.
+
+   Give Codex a prompt like this:
+
+   ```text
+   In /absolute/path/to/codex-connector, create /absolute/path/to/codex-connector/config.json for codex-connector.
+   Use this Telegram bot token: <YOUR_BOT_TOKEN>
+   Use this Telegram chat id: <YOUR_CHAT_ID>
+   Read ~/.codex/.codex-global-state.json and populate projects from my local Codex setup.
+   Restrict allowed_chat_ids to my chat id.
+   Enable codex_sessions.
+   Keep config.json local and do not commit it.
+   ```
+
+   If you prefer manual editing, [config.example.json](config.example.json) is the reference file, but the intended flow is to let Codex write your local config.
 
 4. Start the bridge.
 
@@ -157,75 +138,12 @@ flowchart LR
    /status
    ```
 
-## Configuration
+## Telegram Flow
 
-Copy `config.example.json` to `config.json` and edit the values for your machine.
-
-The config supports:
-
-- Telegram bot credentials and an allowlist of chat ids
-- A small `runner` section for selecting the local CLI implementation
-- A fixed list of local repositories
-- Optional realtime session mirroring from local Codex state
-- Optional `security` rules for chat allowlisting and repo validation
-- Optional runtime settings such as `state_path`, `log_path`, and `max_output_chars`
-
-Example:
-
-```json
-{
-  "telegram": {
-    "bot_token": "123456789:REPLACE_WITH_YOUR_BOT_TOKEN",
-    "allowed_chat_ids": [123456789],
-    "poll_interval_seconds": 2,
-    "request_timeout_seconds": 30
-  },
-  "runner": {
-    "provider": "codex",
-    "binary": "codex",
-    "timeout_seconds": 0
-  },
-  "codex_sessions": {
-    "enabled": true,
-    "state_db_path": "~/.codex/state_5.sqlite",
-    "poll_interval_seconds": 2.0,
-    "include_user_messages": false,
-    "desktop_active_mode": "always",
-    "desktop_idle_threshold_seconds": 120
-  },
-  "security": {
-    "allow_unlisted_chats": false,
-    "require_existing_repos": true,
-    "require_git_repos": false
-  },
-  "runtime": {
-    "state_path": "./state.json",
-    "log_path": "./codex-connector.log",
-    "max_output_chars": 1200
-  },
-  "projects": [
-    {
-      "name": "codex-connector",
-      "repo_path": "/Users/you/Documents/GitHub/codex-connector"
-    }
-  ]
-}
-```
-
-## Telegram Commands
-
-| Command | Behavior |
-| --- | --- |
-| `/project` | Show the active project, recent sessions, and inline project buttons |
-| `/project <name>` | Switch the active project and show the same session list |
-| `/new` | Open a project picker and arm the next plain-text message as a fresh session |
-| `/new <prompt>` | Start a new Codex task in the active project immediately |
-| `/continue <prompt>` | Continue the latest Codex session in the active project |
-| `/last` | Show the most recent recorded task for the active project |
-| `/status` | Show the active project and whether a task is running |
-| `/help` | Show the command list |
-
-Plain text without a command is treated as `/continue`.
+- `/project` shows the active project, recent sessions, and inline project buttons.
+- `/new` opens a project picker and treats the next plain-text message as a fresh session.
+- Plain text without a command continues the latest active project context.
+- `/status`, `/last`, and `/help` stay available as lightweight control commands.
 
 ## Extending The Runner
 
@@ -312,7 +230,5 @@ codex-connector last --config ./config.json --chat-id 390429375
 
 ## Repository
 
-- Demo walkthrough: [docs/demo.md](docs/demo.md)
 - Custom runner notes: [docs/custom-runner.md](docs/custom-runner.md)
-- Example config: [config.example.json](config.example.json)
 - Package metadata: [pyproject.toml](pyproject.toml)
