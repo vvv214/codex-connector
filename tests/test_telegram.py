@@ -83,6 +83,13 @@ class TelegramClientTests(unittest.TestCase):
             {"inline_keyboard": keyboard},
         )
 
+    def test_send_message_can_disable_notification(self) -> None:
+        bot = RecordingTelegramBotClient()
+
+        bot.send_message(42, "quiet", disable_notification=True)
+
+        self.assertEqual(bot.requests[0][1]["disable_notification"], "true")
+
 
 if __name__ == "__main__":
     unittest.main()

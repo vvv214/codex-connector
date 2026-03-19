@@ -46,6 +46,7 @@ class FakeTelegram:
         text: str,
         reply_to_message_id: int | None = None,
         inline_keyboard: list[list[dict[str, str]]] | None = None,
+        disable_notification: bool = False,
     ) -> None:
         self.sent.append(
             {
@@ -53,6 +54,7 @@ class FakeTelegram:
                 "text": text,
                 "reply_to_message_id": reply_to_message_id,
                 "inline_keyboard": inline_keyboard,
+                "disable_notification": disable_notification,
             }
         )
 
@@ -61,6 +63,13 @@ class FakeTelegram:
 
 
 class ServiceTests(unittest.TestCase):
+    class FakePresence:
+        def __init__(self, active: bool) -> None:
+            self.active = active
+
+        def is_user_active(self) -> bool:
+            return self.active
+
     def _write_thread(
         self,
         conn: sqlite3.Connection,
@@ -183,6 +192,67 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(task.project_name, "beta")
             self.assertEqual(store.get_chat(42).project_name, "beta")
             self.assertEqual(store.get_chat(42).active_project_name, "beta")
+
+    def test_session_message_is_silent_when_desktop_is_active(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "repo").mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "codex_sessions": {"desktop_active_mode": "silent"},
+                        "projects": [{"name": "alpha", "repo_path": "./repo"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            store = StateStore(root / "state.json")
+            store.load()
+            telegram = FakeTelegram()
+            service = BridgeService(
+                config=config,
+                store=store,
+                adapter=FakeAdapter(),
+                telegram=telegram,
+                desktop_presence=self.FakePresence(active=True),
+            )
+
+            service._send_session_message(42, "mirror update")
+
+            self.assertEqual(len(telegram.sent), 1)
+            self.assertTrue(bool(telegram.sent[0]["disable_notification"]))
+
+    def test_session_message_is_suppressed_when_desktop_is_active(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "repo").mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "codex_sessions": {"desktop_active_mode": "suppress"},
+                        "projects": [{"name": "alpha", "repo_path": "./repo"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            store = StateStore(root / "state.json")
+            store.load()
+            telegram = FakeTelegram()
+            service = BridgeService(
+                config=config,
+                store=store,
+                adapter=FakeAdapter(),
+                telegram=telegram,
+                desktop_presence=self.FakePresence(active=True),
+            )
+
+            service._send_session_message(42, "mirror update")
+
+            self.assertEqual(telegram.sent, [])
 
     def test_project_command_lists_recent_sessions_newest_first(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

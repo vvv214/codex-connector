@@ -18,6 +18,8 @@ class CodexSessionsConfig:
     state_db_path: Path = field(default_factory=lambda: Path.home() / ".codex" / "state_5.sqlite")
     poll_interval_seconds: float = 2.0
     include_user_messages: bool = False
+    desktop_active_mode: str = "always"
+    desktop_idle_threshold_seconds: int = 120
 
 
 @dataclass(slots=True)

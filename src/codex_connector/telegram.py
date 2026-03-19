@@ -75,6 +75,7 @@ class TelegramBotClient:
         text: str,
         reply_to_message_id: int | None = None,
         inline_keyboard: list[list[dict[str, str]]] | None = None,
+        disable_notification: bool = False,
     ) -> None:
         chunks = self._chunk_text(text)
         for index, chunk in enumerate(chunks):
@@ -83,6 +84,8 @@ class TelegramBotClient:
                 payload["reply_to_message_id"] = reply_to_message_id
             if inline_keyboard is not None and index == len(chunks) - 1:
                 payload["reply_markup"] = json.dumps({"inline_keyboard": inline_keyboard}, separators=(",", ":"))
+            if disable_notification:
+                payload["disable_notification"] = "true"
             data = parse.urlencode(payload).encode("utf-8")
             req = request.Request(f"{self.base_url}/sendMessage", data=data, method="POST")
             req.add_header("Content-Type", "application/x-www-form-urlencoded")

@@ -33,6 +33,8 @@ class ConfigTests(unittest.TestCase):
                             "state_db_path": "./runtime/codex/state_5.sqlite",
                             "poll_interval_seconds": 3.5,
                             "include_user_messages": True,
+                            "desktop_active_mode": "silent",
+                            "desktop_idle_threshold_seconds": 45,
                         },
                         "runtime": {
                             "state_path": "./runtime/state.json",
@@ -63,6 +65,8 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.codex_sessions.state_db_path, (root / "runtime/codex/state_5.sqlite").resolve())
             self.assertEqual(config.codex_sessions.poll_interval_seconds, 3.5)
             self.assertTrue(config.codex_sessions.include_user_messages)
+            self.assertEqual(config.codex_sessions.desktop_active_mode, "silent")
+            self.assertEqual(config.codex_sessions.desktop_idle_threshold_seconds, 45)
             self.assertFalse(config.security.allow_unlisted_chats)
             self.assertTrue(config.security.require_existing_repos)
             self.assertFalse(config.security.require_git_repos)
@@ -114,6 +118,25 @@ class ConfigTests(unittest.TestCase):
 
             with self.assertRaises(ConfigError):
                 validate_config(config, for_serve=True)
+
+    def test_rejects_invalid_desktop_active_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            repo = root / "repo"
+            repo.mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "codex_sessions": {"desktop_active_mode": "loud"},
+                        "projects": [{"name": "alpha", "repo_path": str(repo)}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ConfigError):
+                load_config(config_path)
 
     def test_loads_legacy_codex_runner_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

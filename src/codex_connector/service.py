@@ -10,6 +10,7 @@ from .commands import ParsedMessage, parse_message
 from .config import AppConfig
 from .codex_sessions import CodexSessionMonitor, SessionNotification, display_thread_title, load_thread_snapshots
 from .models import ChatState, Project, TaskRun
+from .presence import DesktopPresence, create_desktop_presence
 from .rendering import (
     render_help_text,
     render_last_task,
@@ -31,6 +32,7 @@ class BridgeService:
         adapter: Runner,
         telegram: TelegramBotClient | None = None,
         logger: logging.Logger | None = None,
+        desktop_presence: DesktopPresence | None = None,
     ):
         self.config = config
         self.store = store
@@ -39,6 +41,12 @@ class BridgeService:
         self.logger = logger or logging.getLogger("codex_connector")
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="codex-connector")
         self._session_monitor: CodexSessionMonitor | None = None
+        self._desktop_presence = desktop_presence
+        if self._desktop_presence is None and self.config.codex_sessions.desktop_active_mode in {"silent", "suppress"}:
+            self._desktop_presence = create_desktop_presence(
+                idle_threshold_seconds=self.config.codex_sessions.desktop_idle_threshold_seconds,
+                logger=self.logger,
+            )
 
     def close(self) -> None:
         if self._session_monitor is not None:
@@ -257,7 +265,20 @@ class BridgeService:
     def _send_session_message(self, chat_id: int, text: str) -> None:
         if self.telegram is None:
             return
-        self.telegram.send_message(chat_id, text)
+        delivery_mode = self._session_delivery_mode()
+        if delivery_mode == "suppress":
+            return
+        self.telegram.send_message(chat_id, text, disable_notification=(delivery_mode == "silent"))
+
+    def _session_delivery_mode(self) -> str:
+        mode = self.config.codex_sessions.desktop_active_mode
+        if mode not in {"silent", "suppress"}:
+            return "always"
+        if self._desktop_presence is None:
+            return "always"
+        if not self._desktop_presence.is_user_active():
+            return "always"
+        return mode
 
     def _handle_callback_update(self, update: TelegramUpdate) -> None:
         if self.telegram is not None and update.callback_query_id:

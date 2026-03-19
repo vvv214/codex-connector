@@ -84,11 +84,17 @@ def _parse_codex_sessions(payload: dict[str, Any], base_dir: Path) -> CodexSessi
     )
     poll_interval_seconds = float(raw.get("poll_interval_seconds", 2.0))
     include_user_messages = bool(raw.get("include_user_messages", False))
+    desktop_active_mode = str(raw.get("desktop_active_mode", "always")).strip().lower() or "always"
+    if desktop_active_mode not in {"always", "silent", "suppress"}:
+        raise ConfigError("config.codex_sessions.desktop_active_mode must be one of: always, silent, suppress")
+    desktop_idle_threshold_seconds = int(raw.get("desktop_idle_threshold_seconds", 120))
     return CodexSessionsConfig(
         enabled=enabled,
         state_db_path=state_db_path,
         poll_interval_seconds=poll_interval_seconds,
         include_user_messages=include_user_messages,
+        desktop_active_mode=desktop_active_mode,
+        desktop_idle_threshold_seconds=desktop_idle_threshold_seconds,
     )
 
 

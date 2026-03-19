@@ -189,7 +189,9 @@ Example:
     "enabled": true,
     "state_db_path": "~/.codex/state_5.sqlite",
     "poll_interval_seconds": 2.0,
-    "include_user_messages": false
+    "include_user_messages": false,
+    "desktop_active_mode": "always",
+    "desktop_idle_threshold_seconds": 120
   },
   "security": {
     "allow_unlisted_chats": false,
@@ -252,6 +254,7 @@ Behavior details:
 - Intermediate `update` messages are shortened for mobile reading.
 - Completion messages are sent in full, split across multiple Telegram messages when needed.
 - The latest mirrored session can automatically update the active project for that chat.
+- On macOS, mirrored session notifications can switch to `silent` or `suppress` while the desktop is active.
 
 ## Development
 
