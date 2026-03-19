@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import sys
 import tempfile
 import unittest
-import sys
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "src"
@@ -28,14 +28,24 @@ class Collector:
         self.messages.append((chat_id, text))
 
 
-def _write_thread(conn: sqlite3.Connection, *, thread_id: str, rollout_path: Path, cwd: str, title: str, updated_at: int) -> None:
-    conn.execute(
-        """
-        INSERT INTO threads (id, rollout_path, created_at, updated_at, cwd, title, git_branch)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (thread_id, str(rollout_path), updated_at, updated_at, cwd, title, "main"),
-    )
+def _write_thread(
+    conn: sqlite3.Connection,
+    *,
+    thread_id: str,
+    rollout_path: Path,
+    cwd: str,
+    title: str,
+    updated_at: int,
+    first_user_message: str | None = None,
+) -> None:
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(threads)").fetchall()}
+    names = ["id", "rollout_path", "created_at", "updated_at", "cwd", "title", "git_branch"]
+    values: list[object] = [thread_id, str(rollout_path), updated_at, updated_at, cwd, title, "main"]
+    if "first_user_message" in columns:
+        names.append("first_user_message")
+        values.append(title if first_user_message is None else first_user_message)
+    placeholders = ", ".join("?" for _ in values)
+    conn.execute(f"INSERT INTO threads ({', '.join(names)}) VALUES ({placeholders})", values)
     conn.commit()
 
 
@@ -119,6 +129,49 @@ class CodexSessionTests(unittest.TestCase):
         self.assertIn("Completed.", rendered)
         self.assertIn(message.strip(), rendered)
 
+    def test_parse_rollout_line_uses_recent_topic_when_title_is_stale(self) -> None:
+        notification = parse_rollout_line(
+            json.dumps(
+                {
+                    "payload": {
+                        "type": "agent_message",
+                        "message": "Refactor Telegram session titles to use the latest topic summary",
+                    }
+                }
+            ),
+            CodexThreadSnapshot(
+                thread_id="thread-2",
+                rollout_path=Path("/tmp/rollout.jsonl"),
+                cwd="/Users/tianhao/Documents/GitHub/example-project",
+                title="Long original prompt",
+                updated_at=1.0,
+                first_user_message="Long original prompt",
+            ),
+            include_user_messages=False,
+        )
+
+        self.assertIsNotNone(notification)
+        assert notification is not None
+        self.assertEqual(notification.title, "Refactor Telegram session titles to use the latest topic summary")
+
+    def test_parse_rollout_line_prefers_explicit_thread_title(self) -> None:
+        notification = parse_rollout_line(
+            json.dumps({"payload": {"type": "agent_message", "message": "Current work is different now"}}),
+            CodexThreadSnapshot(
+                thread_id="thread-3",
+                rollout_path=Path("/tmp/rollout.jsonl"),
+                cwd="/Users/tianhao/Documents/GitHub/example-project",
+                title="Renamed session title",
+                updated_at=1.0,
+                first_user_message="Original first prompt",
+            ),
+            include_user_messages=False,
+        )
+
+        self.assertIsNotNone(notification)
+        assert notification is not None
+        self.assertEqual(notification.title, "Renamed session title")
+
     def test_monitor_skips_existing_history_and_reads_new_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -182,10 +235,7 @@ class CodexSessionTests(unittest.TestCase):
             )
 
             monitor.prime()
-            _append_jsonl(
-                old_rollout,
-                {"payload": {"type": "agent_message", "message": "Live update"}},
-            )
+            _append_jsonl(old_rollout, {"payload": {"type": "agent_message", "message": "Live update"}})
 
             conn = sqlite3.connect(db_path)
             _write_thread(
@@ -258,15 +308,67 @@ class CodexSessionTests(unittest.TestCase):
             )
             conn.close()
 
-            _append_jsonl(
-                rollout,
-                {"payload": {"type": "agent_message", "message": "中文更新 with emoji-like text"}},
-            )
+            _append_jsonl(rollout, {"payload": {"type": "agent_message", "message": "中文更新 with emoji-like text"}})
 
             monitor.poll_once()
 
             self.assertEqual(len(collector.messages), 1)
             self.assertIn("中文更新", collector.messages[0][1])
+
+    def test_monitor_prefers_dynamic_title_from_agent_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            db_path = root / "state_dynamic_title.sqlite"
+            rollout_path = root / "dynamic_title.jsonl"
+            rollout_path.write_text("", encoding="utf-8")
+
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                CREATE TABLE threads (
+                    id TEXT PRIMARY KEY,
+                    rollout_path TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    cwd TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    first_user_message TEXT NOT NULL DEFAULT '',
+                    git_branch TEXT
+                )
+                """
+            )
+            _write_thread(
+                conn,
+                thread_id="thread-dynamic",
+                rollout_path=rollout_path,
+                cwd="/Users/tianhao/Documents/GitHub/dynamic-project",
+                title="Stale initial title that used to be the first prompt",
+                updated_at=1,
+                first_user_message="Stale initial title that used to be the first prompt",
+            )
+            conn.close()
+
+            collector = Collector()
+            monitor = CodexSessionMonitor(
+                state_db_path=db_path,
+                poll_interval_seconds=0.1,
+                include_user_messages=False,
+                target_chat_ids=lambda: [123],
+                send_message=collector.send,
+                logger=logging.getLogger("test.codex_sessions.dynamic"),
+            )
+
+            monitor.prime()
+            _append_jsonl(rollout_path, {"payload": {"type": "agent_message", "message": "First update message"}})
+            _append_jsonl(rollout_path, {"payload": {"type": "agent_message", "message": "Second update message"}})
+            _append_jsonl(rollout_path, {"payload": {"type": "agent_message", "message": "Final topic summary"}})
+
+            monitor.poll_once()
+
+            self.assertEqual(len(collector.messages), 3)
+            self.assertIn("[dynamic-project] First update message · update", collector.messages[0][1])
+            self.assertIn("[dynamic-project] Second update message · update", collector.messages[1][1])
+            self.assertIn("[dynamic-project] Final topic summary · update", collector.messages[2][1])
 
 
 if __name__ == "__main__":

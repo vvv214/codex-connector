@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -69,14 +70,16 @@ class ServiceTests(unittest.TestCase):
         cwd: str,
         title: str,
         updated_at: int,
+        first_user_message: str | None = None,
     ) -> None:
-        conn.execute(
-            """
-            INSERT INTO threads (id, rollout_path, created_at, updated_at, cwd, title, git_branch)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (thread_id, str(rollout_path), updated_at, updated_at, cwd, title, "main"),
-        )
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(threads)").fetchall()}
+        names = ["id", "rollout_path", "created_at", "updated_at", "cwd", "title", "git_branch"]
+        values: list[object] = [thread_id, str(rollout_path), updated_at, updated_at, cwd, title, "main"]
+        if "first_user_message" in columns:
+            names.append("first_user_message")
+            values.append(title if first_user_message is None else first_user_message)
+        placeholders = ", ".join("?" for _ in values)
+        conn.execute(f"INSERT INTO threads ({', '.join(names)}) VALUES ({placeholders})", values)
         conn.commit()
 
     def test_rejects_overlapping_task_submission(self) -> None:
@@ -255,6 +258,82 @@ class ServiceTests(unittest.TestCase):
             self.assertIn("Active project: alpha", text)
             self.assertIn("Recent sessions:", text)
             self.assertLess(text.index("Newest beta session"), text.index("Older alpha session"))
+
+    def test_project_command_prefers_recent_rollout_topic_over_first_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            repo = root / "repo-a"
+            repo.mkdir()
+            db_path = root / "state_5.sqlite"
+            rollout_path = root / "alpha.jsonl"
+            rollout_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"payload": {"type": "task_started"}}),
+                        json.dumps({"payload": {"type": "agent_message", "message": "Polish README positioning and add release metadata"}}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config_path = root / "config.json"
+            config_path.write_text(
+                f"""
+                {{
+                  "projects": [
+                    {{"name": "alpha", "repo_path": "./repo-a"}}
+                  ],
+                  "codex_sessions": {{
+                    "state_db_path": "{db_path}"
+                  }}
+                }}
+                """.strip(),
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            store = StateStore(root / "state.json")
+            store.load()
+            store.upsert_chat(
+                7,
+                project_name="alpha",
+                repo_path=str(repo.resolve()),
+                last_active_at=1.0,
+                active_project_name="alpha",
+            )
+            service = BridgeService(config=config, store=store, adapter=FakeAdapter())
+
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                CREATE TABLE threads (
+                    id TEXT PRIMARY KEY,
+                    rollout_path TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    cwd TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    first_user_message TEXT NOT NULL DEFAULT '',
+                    git_branch TEXT
+                )
+                """
+            )
+            self._write_thread(
+                conn,
+                thread_id="alpha-thread",
+                rollout_path=rollout_path,
+                cwd=str(repo.resolve()),
+                title="Very old first prompt",
+                updated_at=2,
+                first_user_message="Very old first prompt",
+            )
+            conn.close()
+
+            text = service.handle_message(7, "/project")
+
+            self.assertIsNotNone(text)
+            assert text is not None
+            self.assertIn("Polish README positioning", text)
+            self.assertNotIn("Very old first prompt", text)
 
     def test_project_switch_returns_recent_session_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

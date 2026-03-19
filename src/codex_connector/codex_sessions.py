@@ -4,7 +4,6 @@ import json
 import logging
 import sqlite3
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
@@ -17,6 +16,7 @@ class CodexThreadSnapshot:
     cwd: str
     title: str
     updated_at: float
+    first_user_message: str = ""
 
 
 @dataclass(slots=True)
@@ -71,6 +71,88 @@ def _short_title(text: str, fallback: str) -> str:
     return _truncate(compact, 28)
 
 
+def _preferred_db_title(title: str, first_user_message: str) -> str:
+    compact_title = _compact(title)
+    if not compact_title:
+        return ""
+    compact_first = _compact(first_user_message)
+    if compact_first and compact_title == compact_first:
+        return ""
+    return compact_title
+
+
+def _topic_from_text(text: str) -> str:
+    compact = _compact(text)
+    if not compact:
+        return ""
+    return _truncate(compact, 120)
+
+
+def _recent_rollout_topic(path: Path, logger: logging.Logger | None = None) -> str:
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
+            start = max(0, size - 16_384)
+            handle.seek(start)
+            if start:
+                handle.readline()
+            chunk = handle.read().decode("utf-8", errors="replace")
+    except FileNotFoundError:
+        return ""
+    except Exception:
+        if logger is not None:
+            logger.exception("failed to read rollout topic from %s", path)
+        return ""
+
+    for raw_line in reversed(chunk.splitlines()):
+        if not raw_line.strip():
+            continue
+        try:
+            payload = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        event = payload.get("payload")
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "").strip()
+        if event_type == "task_complete":
+            topic = _topic_from_text(str(event.get("last_agent_message") or ""))
+        elif event_type == "agent_message":
+            topic = _topic_from_text(str(event.get("message") or ""))
+        else:
+            continue
+        if topic:
+            return topic
+    return ""
+
+
+def display_thread_title(
+    thread: CodexThreadSnapshot,
+    *,
+    topic_source: str | None = None,
+    allow_rollout_scan: bool = True,
+    logger: logging.Logger | None = None,
+) -> str:
+    preferred_title = _preferred_db_title(thread.title, thread.first_user_message)
+    if preferred_title:
+        return preferred_title
+
+    topic = _topic_from_text(topic_source or "")
+    if topic:
+        return topic
+
+    if allow_rollout_scan:
+        topic = _recent_rollout_topic(thread.rollout_path, logger)
+        if topic:
+            return topic
+
+    fallback = _compact(thread.title) or _compact(thread.first_user_message)
+    return fallback or thread.thread_id[:8]
+
+
 def format_notification(notification: SessionNotification) -> str:
     title = _short_title(notification.title, notification.thread_id[:8])
     header = f"[{notification.workspace}] {title} · {_session_label(notification.event_type)}"
@@ -94,9 +176,11 @@ def load_thread_snapshots(db_path: Path, logger: logging.Logger) -> list[CodexTh
     try:
         conn = _open_read_only_sqlite(db_path)
         conn.row_factory = sqlite3.Row
+        columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(threads)").fetchall()}
+        first_user_message_expr = "first_user_message" if "first_user_message" in columns else "'' AS first_user_message"
         rows = conn.execute(
-            """
-            SELECT id, rollout_path, cwd, title, updated_at
+            f"""
+            SELECT id, rollout_path, cwd, title, updated_at, {first_user_message_expr}
             FROM threads
             ORDER BY updated_at ASC
             """
@@ -120,6 +204,7 @@ def load_thread_snapshots(db_path: Path, logger: logging.Logger) -> list[CodexTh
                 cwd=str(row["cwd"] or ""),
                 title=str(row["title"] or ""),
                 updated_at=float(row["updated_at"] or 0.0),
+                first_user_message=str(row["first_user_message"] or ""),
             )
         )
     return snapshots
@@ -143,16 +228,20 @@ def parse_rollout_line(
         return None
 
     event_type = str(event.get("type") or "").strip()
+    topic_source = ""
     if event_type == "user_message":
         if not include_user_messages:
             return None
         body = str(event.get("message") or "").strip()
+        topic_source = body
     elif event_type == "agent_message":
         body = str(event.get("message") or "").strip()
+        topic_source = body
     elif event_type == "task_started":
         body = "Codex session started."
     elif event_type == "task_complete":
-        body = str(event.get("last_agent_message") or "").strip()
+        topic_source = str(event.get("last_agent_message") or "").strip()
+        body = topic_source
         if last_agent_body and body and body == last_agent_body.strip():
             body = ""
         if body:
@@ -165,7 +254,7 @@ def parse_rollout_line(
     return SessionNotification(
         thread_id=thread.thread_id,
         workspace=_workspace_name(thread.cwd),
-        title=thread.title.strip() or thread.thread_id[:8],
+        title=display_thread_title(thread, topic_source=topic_source, allow_rollout_scan=False),
         event_type=event_type,
         body=body,
         repo_path=thread.cwd,

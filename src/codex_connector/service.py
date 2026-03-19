@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .commands import ParsedMessage, parse_message
 from .config import AppConfig
-from .codex_sessions import CodexSessionMonitor, SessionNotification, load_thread_snapshots
+from .codex_sessions import CodexSessionMonitor, SessionNotification, display_thread_title, load_thread_snapshots
 from .models import ChatState, Project, TaskRun
 from .rendering import (
     render_help_text,
@@ -422,7 +422,7 @@ class BridgeService:
             if project is None:
                 project = self.config.project_by_name(Path(snapshot.cwd).name)
             label = project.name if project is not None else (Path(snapshot.cwd).name.strip() or "session")
-            title = snapshot.title.strip() or snapshot.thread_id[:8]
+            title = display_thread_title(snapshot, logger=self.logger)
             rows.append((label, title, snapshot.updated_at))
         return rows
 

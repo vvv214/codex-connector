@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>codex-connector social preview</title>
+<style>
+  :root {
+    --sand: #f6e8d5;
+    --sand-2: #ecd9bf;
+    --ink: #111917;
+    --teal: #17302d;
+    --teal-2: #245d55;
+    --orange: #e28e48;
+    --line: rgba(159,123,90,.32);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    width: 1280px;
+    height: 640px;
+    overflow: hidden;
+    background: linear-gradient(135deg, var(--sand) 0%, var(--sand-2) 52%, #dcc8af 100%);
+    color: var(--ink);
+    font-family: Helvetica, Arial, sans-serif;
+    position: relative;
+  }
+  .orb {
+    position: absolute;
+    border-radius: 999px;
+    filter: blur(.2px);
+  }
+  .orb.a { width: 264px; height: 264px; left: 46px; top: 16px; background: rgba(20,74,67,.08); }
+  .orb.b { width: 264px; height: 264px; right: 42px; top: -24px; background: rgba(226,142,72,.16); }
+  .orb.c { width: 380px; height: 380px; right: 32px; bottom: -58px; background: rgba(20,74,67,.12); }
+  .frame {
+    position: absolute;
+    inset: 60px;
+    border-radius: 28px;
+    background: rgba(255,249,240,.64);
+    border: 2px solid var(--line);
+  }
+  .left {
+    position: absolute;
+    left: 112px;
+    top: 110px;
+    width: 660px;
+  }
+  .eyebrow {
+    font: 600 28px Menlo, Monaco, "Courier New", monospace;
+    color: var(--teal);
+    margin-bottom: 18px;
+  }
+  .title {
+    font-size: 80px;
+    line-height: .92;
+    font-weight: 800;
+    letter-spacing: -2px;
+    margin: 0 0 28px 0;
+    white-space: nowrap;
+  }
+  .subtitle {
+    font-size: 34px;
+    line-height: 1.35;
+    color: #2d4b47;
+    margin: 0 0 34px 0;
+  }
+  .chips { display: flex; gap: 16px; margin-bottom: 26px; }
+  .chip {
+    border-radius: 16px;
+    padding: 14px 24px;
+    color: #fff9f0;
+    font: 600 24px Menlo, Monaco, "Courier New", monospace;
+  }
+  .chip.dark { background: var(--teal); }
+  .chip.orange { background: var(--orange); }
+  .chip.green { background: var(--teal-2); }
+  .foot {
+    display: inline-block;
+    padding: 10px 22px;
+    border-radius: 999px;
+    background: #f0ddc5;
+    color: #5c4938;
+    font-size: 21px;
+  }
+  .panel {
+    position: absolute;
+    right: 112px;
+    top: 112px;
+    width: 422px;
+    height: 416px;
+    border-radius: 32px;
+    background: linear-gradient(180deg, #1e2b2a 0%, #111917 100%);
+  }
+  .phone {
+    position: absolute;
+    left: 62px;
+    top: 20px;
+    width: 238px;
+    height: 362px;
+    border-radius: 32px;
+    background: linear-gradient(180deg, #fff9f0 0%, #f7e8d4 100%);
+    border: 3px solid #d9c2a5;
+  }
+  .notch {
+    width: 98px;
+    height: 12px;
+    border-radius: 999px;
+    background: #d9c2a5;
+    margin: 12px auto 28px;
+  }
+  .bubble {
+    margin-left: 24px;
+    margin-bottom: 18px;
+    display: inline-block;
+    border-radius: 18px;
+    padding: 17px 20px;
+    color: #fff9f0;
+    font: 600 24px Menlo, Monaco, "Courier New", monospace;
+  }
+  .bubble.dark { background: var(--teal); }
+  .bubble.orange { background: var(--orange); }
+  .bubble.light {
+    margin-left: 54px;
+    background: #f1ded2;
+    color: var(--teal);
+    font: 600 21px Helvetica, Arial, sans-serif;
+  }
+  .server {
+    position: absolute;
+    right: 28px;
+    top: 68px;
+    width: 58px;
+    height: 196px;
+    border-radius: 18px;
+    background: #2a4b46;
+  }
+  .led {
+    width: 34px;
+    height: 16px;
+    border-radius: 999px;
+    background: #f6e8d5;
+    margin: 22px auto 0;
+  }
+</style>
+</head>
+<body>
+<div class="orb a"></div>
+<div class="orb b"></div>
+<div class="orb c"></div>
+<div class="frame"></div>
+<section class="left">
+  <div class="eyebrow">Telegram-first, local-first</div>
+  <h1 class="title">codex-connector</h1>
+  <p class="subtitle">Drive your local Codex CLI from your phone.<br/>Project switching, session mirroring, zero cloud middle layer.</p>
+  <div class="chips">
+    <div class="chip dark">/project</div>
+    <div class="chip orange">/new</div>
+    <div class="chip green">session mirror</div>
+  </div>
+  <div class="foot">Single-user bridge. Thin by design. Easy to fork for your own runner.</div>
+</section>
+<section class="panel">
+  <div class="phone">
+    <div class="notch"></div>
+    <div class="bubble dark">/project repo</div>
+    <div class="bubble orange">/new fix CI</div>
+    <div class="bubble light">Mirror updates</div>
+  </div>
+  <div class="server">
+    <div class="led"></div>
+    <div class="led"></div>
+    <div class="led"></div>
+    <div class="led"></div>
+    <div class="led"></div>
+  </div>
+</section>
+</body>
+</html>
