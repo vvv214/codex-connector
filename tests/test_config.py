@@ -10,7 +10,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from codex_connector.config import apply_overrides, load_config
+from codex_connector.config import ConfigError, apply_overrides, load_config, validate_config
 
 
 class ConfigTests(unittest.TestCase):
@@ -60,12 +60,72 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.codex_sessions.state_db_path, (root / "runtime/codex/state_5.sqlite").resolve())
             self.assertEqual(config.codex_sessions.poll_interval_seconds, 3.5)
             self.assertTrue(config.codex_sessions.include_user_messages)
+            self.assertFalse(config.security.allow_unlisted_chats)
+            self.assertTrue(config.security.require_existing_repos)
+            self.assertFalse(config.security.require_git_repos)
             self.assertEqual(config.poll_sleep_seconds, 5.0)
             self.assertEqual(config.request_timeout_seconds, 11)
             self.assertEqual(config.state_file, (root / "runtime/state.json").resolve())
             self.assertEqual(config.log_file, (root / "runtime/logs/bridge.log").resolve())
             self.assertEqual(config.projects[0].repo_path, str((root / "repos/alpha").resolve()))
             self.assertEqual(config.max_output_chars, 1200)
+
+    def test_loads_security_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            repo = root / "repo"
+            repo.mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "security": {
+                            "allow_unlisted_chats": True,
+                            "require_existing_repos": False,
+                            "require_git_repos": True,
+                        },
+                        "projects": [{"name": "alpha", "repo_path": str(repo)}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            self.assertTrue(config.security.allow_unlisted_chats)
+            self.assertFalse(config.security.require_existing_repos)
+            self.assertTrue(config.security.require_git_repos)
+
+    def test_validate_config_requires_allowed_chat_ids_for_serve(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            repo = root / "repo"
+            repo.mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps({"projects": [{"name": "alpha", "repo_path": str(repo)}]}),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            with self.assertRaises(ConfigError):
+                validate_config(config, for_serve=True)
+
+    def test_validate_config_checks_repo_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            missing_repo = root / "missing"
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps({"projects": [{"name": "alpha", "repo_path": str(missing_repo)}]}),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            with self.assertRaises(ConfigError):
+                validate_config(config)
 
     def test_apply_overrides_replaces_runtime_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -10,14 +10,19 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from codex_connector.models import TaskRun
-from codex_connector.rendering import render_help_text, render_project_sessions, render_task_result
+from codex_connector.rendering import (
+    render_help_text,
+    render_new_task_picker,
+    render_project_sessions,
+    render_task_result,
+)
 
 
 class RenderingTests(unittest.TestCase):
     def test_render_help_text(self) -> None:
         help_text = render_help_text()
         self.assertIn("/project [name]  list active project and recent sessions, or switch active project", help_text)
-        self.assertIn("/new <prompt>", help_text)
+        self.assertIn("/new [prompt]", help_text)
         self.assertIn("/continue <prompt>", help_text)
         self.assertIn("/last", help_text)
         self.assertIn("/status", help_text)
@@ -50,6 +55,12 @@ class RenderingTests(unittest.TestCase):
         text = render_project_sessions(active_project_name="my-proj", sessions=[], prefix="Hello there!")
         self.assertIn("Hello there!", text)
         self.assertIn("Active project: my-proj", text)
+
+    def test_render_new_task_picker(self) -> None:
+        text = render_new_task_picker(active_project_name="my-proj", sessions=[], prefix="Pick a project.")
+        self.assertIn("Pick a project.", text)
+        self.assertIn("New task project: my-proj", text)
+        self.assertIn("Recent sessions: none", text)
 
     def test_render_project_sessions_truncation(self) -> None:
         # Create a long session list to test truncation

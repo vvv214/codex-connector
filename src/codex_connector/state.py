@@ -31,6 +31,7 @@ class StateStore:
                     last_active_at=float(raw["last_active_at"]),
                     current_task_id=raw.get("current_task_id"),
                     active_project_name=raw.get("active_project_name"),
+                    pending_mode=raw.get("pending_mode"),
                 )
                 chats[int(key)] = chat
             tasks: dict[str, TaskRun] = {}
@@ -131,6 +132,15 @@ class StateStore:
     def add_task(self, task: TaskRun) -> None:
         with self._lock:
             self._tasks[task.task_id] = task
+            self.save()
+
+    def set_chat_pending_mode(self, chat_id: int, pending_mode: str | None) -> None:
+        with self._lock:
+            chat = self._chats.get(chat_id)
+            if chat is None:
+                raise KeyError(f"unknown chat {chat_id}")
+            chat.pending_mode = pending_mode
+            self._chats[chat_id] = chat
             self.save()
 
     def update_task(self, task: TaskRun) -> None:

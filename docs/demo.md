@@ -33,7 +33,11 @@ Why this matters:
 ## Scenario 2: Start a Task From Your Phone
 
 ```text
-You      /new add a smoke test for project callback buttons
+You      /new
+Bot      New task mode armed for codex-connector. Send the prompt after choosing a project.
+         [• codex-connector] [CoPaw]
+
+You      add a smoke test for project callback buttons
 Bot      Queued new task 71d8b7... for codex-connector
 
 Bot      [codex-connector] callback tests · update

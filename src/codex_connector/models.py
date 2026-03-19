@@ -21,6 +21,13 @@ class CodexSessionsConfig:
 
 
 @dataclass(slots=True)
+class SecurityConfig:
+    allow_unlisted_chats: bool = False
+    require_existing_repos: bool = True
+    require_git_repos: bool = False
+
+
+@dataclass(slots=True)
 class ChatState:
     chat_id: int
     project_name: str
@@ -28,6 +35,7 @@ class ChatState:
     last_active_at: float
     current_task_id: str | None = None
     active_project_name: str | None = None
+    pending_mode: str | None = None
 
 
 @dataclass(slots=True)
@@ -55,6 +63,7 @@ class AppConfig:
     codex_binary: str = "codex"
     codex_timeout_seconds: int = 0
     codex_sessions: CodexSessionsConfig = field(default_factory=CodexSessionsConfig)
+    security: SecurityConfig = field(default_factory=SecurityConfig)
     poll_timeout_seconds: int = 20
     poll_sleep_seconds: float = 2.0
     request_timeout_seconds: int = 30

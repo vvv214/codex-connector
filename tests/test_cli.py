@@ -39,11 +39,12 @@ class CliTests(unittest.TestCase):
     def test_serve_accepts_config_after_subcommand(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
+            (root / "repo").mkdir()
             config_path = root / "config.json"
             config_path.write_text(
                 json.dumps(
                     {
-                        "telegram": {"bot_token": "token"},
+                        "telegram": {"bot_token": "token", "allowed_chat_ids": [123]},
                         "projects": [{"name": "alpha", "repo_path": "./repo"}],
                     }
                 ),
@@ -59,6 +60,7 @@ class CliTests(unittest.TestCase):
     def test_run_uses_explicit_state_path_and_chat_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
+            (root / "repo").mkdir()
             config_path = root / "config.json"
             config_path.write_text(
                 json.dumps({"projects": [{"name": "alpha", "repo_path": "./repo"}]}),
@@ -95,6 +97,7 @@ class CliTests(unittest.TestCase):
     def test_status_reads_explicit_state_after_subcommand(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
+            (root / "repo").mkdir()
             config_path = root / "config.json"
             config_path.write_text(
                 json.dumps({"projects": [{"name": "alpha", "repo_path": "./repo"}]}),

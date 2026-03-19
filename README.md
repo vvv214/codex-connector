@@ -61,6 +61,7 @@ Bot      [codex-connector] callback tests · completed
 | --- | --- |
 | Remote control | `/new`, `/continue`, `/status`, `/last`, and plain-text follow-ups from Telegram |
 | Project switching | `/project` shows recent sessions and inline buttons for quick switching |
+| New-task picker | `/new` without a prompt opens a project picker and arms the next plain-text message as a fresh session |
 | Session continuity | Plain text defaults to continuing the latest active project context |
 | Desktop mirroring | Local Codex sessions can push `started`, `update`, and `completed` events into Telegram |
 | Mobile-friendly output | Intermediate updates are short; long completions are split into multiple Telegram messages |
@@ -120,6 +121,7 @@ The config supports:
 - A fixed list of local repositories
 - Optional `codex.timeout_seconds` for long-running Codex tasks
 - Optional realtime session mirroring from local Codex state
+- Optional `security` rules for chat allowlisting and repo validation
 - Optional runtime settings such as `state_path`, `log_path`, and `max_output_chars`
 
 Example:
@@ -142,6 +144,11 @@ Example:
     "poll_interval_seconds": 2.0,
     "include_user_messages": false
   },
+  "security": {
+    "allow_unlisted_chats": false,
+    "require_existing_repos": true,
+    "require_git_repos": false
+  },
   "runtime": {
     "state_path": "./state.json",
     "log_path": "./codex-connector.log",
@@ -162,7 +169,8 @@ Example:
 | --- | --- |
 | `/project` | Show the active project, recent sessions, and inline project buttons |
 | `/project <name>` | Switch the active project and show the same session list |
-| `/new <prompt>` | Start a new Codex task in the active project |
+| `/new` | Open a project picker and arm the next plain-text message as a fresh session |
+| `/new <prompt>` | Start a new Codex task in the active project immediately |
 | `/continue <prompt>` | Continue the latest Codex session in the active project |
 | `/last` | Show the most recent recorded task for the active project |
 | `/status` | Show the active project and whether a task is running |
@@ -211,7 +219,9 @@ codex-connector last --config ./config.json --chat-id 390429375
 ## Security Notes
 
 - Restrict `allowed_chat_ids` to chats you control.
+- `serve` now fails closed unless `allowed_chat_ids` is configured or `security.allow_unlisted_chats` is explicitly enabled.
 - Keep `config.json` local and out of git.
+- Leave `security.require_existing_repos` enabled unless you have a strong reason not to.
 - Only expose repositories you trust.
 - Treat this as a personal local tool, not a public multi-user service.
 
@@ -220,6 +230,20 @@ codex-connector last --config ./config.json --chat-id 390429375
 - Telegram is a compact control layer, not a rich IDE.
 - Outputs are optimized for phones, not diffs or large logs.
 - The bridge assumes your local `codex` CLI and project environment are already configured correctly.
+
+## Contributing
+
+- Keep changes small and local-first; avoid turning this into a hosted service.
+- Add or update `unittest` coverage for command parsing, state persistence, and Telegram callbacks when behavior changes.
+- Prefer mobile-oriented UX: short intermediate updates, explicit project context, and deterministic callback flows.
+- When adding config surface area, update both [config.example.json](config.example.json) and this README in the same change.
+
+## Out Of Scope
+
+- multi-user bot hosting or tenant isolation
+- remote code execution on machines you do not control
+- full IDE-style chat history, diff browsing, or rich artifact rendering inside Telegram
+- replacing the local Codex CLI; this project is a thin control plane, not a new agent runtime
 
 ## Repository
 

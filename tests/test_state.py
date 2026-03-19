@@ -76,6 +76,21 @@ class StateStoreTests(unittest.TestCase):
             self.assertEqual(chat.current_task_id, "task-7")
             self.assertEqual(chat.active_project_name, "beta")
 
+    def test_set_chat_pending_mode_persists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "state.json"
+            store = StateStore(path)
+            store.load()
+            store.set_chat(ChatState(chat_id=8, project_name="alpha", repo_path="/repo-a", last_active_at=1.0))
+
+            store.set_chat_pending_mode(8, "new")
+
+            restored = StateStore(path)
+            restored.load()
+            chat = restored.get_chat(8)
+            self.assertIsNotNone(chat)
+            self.assertEqual(chat.pending_mode, "new")
+
     def test_get_recent_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "state.json"

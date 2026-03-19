@@ -31,7 +31,7 @@ def render_help_text() -> str:
     return (
         "Commands:\n"
         "/project [name]  list active project and recent sessions, or switch active project\n"
-        "/new <prompt>    start a new Codex session\n"
+        "/new [prompt]    start a new Codex session, or open a project picker\n"
         "/continue <prompt>  continue the latest session\n"
         "/last            show the latest task for the active project\n"
         "/status          show active project and running state\n"
@@ -40,17 +40,19 @@ def render_help_text() -> str:
     )
 
 
-def render_project_sessions(
-    active_project_name: str | None,
+def _render_session_overview(
+    *,
+    active_label: str,
+    instruction: str,
     sessions: list[tuple[str, str, float]],
-    max_chars: int = 4000,
-    prefix: str | None = None,
+    max_chars: int,
+    prefix: str | None,
 ) -> str:
     lines: list[str] = []
     if prefix:
         lines.append(prefix)
-    lines.append(f"Active project: {active_project_name or 'n/a'}")
-    lines.append("Tap a button below or use /project <name> to switch.")
+    lines.append(active_label)
+    lines.append(instruction)
     if not sessions:
         lines.extend(["", "Recent sessions: none"])
         return "\n".join(lines)
@@ -67,6 +69,36 @@ def render_project_sessions(
     if omitted:
         lines.append(f"... {omitted} more")
     return "\n".join(lines)
+
+
+def render_project_sessions(
+    active_project_name: str | None,
+    sessions: list[tuple[str, str, float]],
+    max_chars: int = 4000,
+    prefix: str | None = None,
+) -> str:
+    return _render_session_overview(
+        active_label=f"Active project: {active_project_name or 'n/a'}",
+        instruction="Tap a button below or use /project <name> to switch.",
+        sessions=sessions,
+        max_chars=max_chars,
+        prefix=prefix,
+    )
+
+
+def render_new_task_picker(
+    active_project_name: str | None,
+    sessions: list[tuple[str, str, float]],
+    max_chars: int = 4000,
+    prefix: str | None = None,
+) -> str:
+    return _render_session_overview(
+        active_label=f"New task project: {active_project_name or 'n/a'}",
+        instruction="Tap a project below, then send the prompt for a fresh session.",
+        sessions=sessions,
+        max_chars=max_chars,
+        prefix=prefix,
+    )
 
 
 def render_status(chat: ChatState | None, project: Project | None, task: TaskRun | None) -> str:

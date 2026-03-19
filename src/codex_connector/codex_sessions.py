@@ -90,19 +90,23 @@ def _open_read_only_sqlite(db_path: Path) -> sqlite3.Connection:
 
 
 def load_thread_snapshots(db_path: Path, logger: logging.Logger) -> list[CodexThreadSnapshot]:
+    conn: sqlite3.Connection | None = None
     try:
-        with _open_read_only_sqlite(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT id, rollout_path, cwd, title, updated_at
-                FROM threads
-                ORDER BY updated_at ASC
-                """
-            ).fetchall()
+        conn = _open_read_only_sqlite(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT id, rollout_path, cwd, title, updated_at
+            FROM threads
+            ORDER BY updated_at ASC
+            """
+        ).fetchall()
     except Exception:
         logger.exception("failed to load Codex sessions from %s", db_path)
         return []
+    finally:
+        if conn is not None:
+            conn.close()
 
     snapshots: list[CodexThreadSnapshot] = []
     for row in rows:

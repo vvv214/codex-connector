@@ -22,10 +22,11 @@ class CommandParsingTests(unittest.TestCase):
         parsed = parse_message("please tighten the tests")
         self.assertEqual(parsed.kind, "continue")
         self.assertEqual(parsed.argument, "please tighten the tests")
+        self.assertTrue(parsed.from_plain_text)
 
     def test_help_text_includes_core_commands(self) -> None:
         text = render_help_text()
-        self.assertIn("/new <prompt>", text)
+        self.assertIn("/new [prompt]", text)
         self.assertIn("/status", text)
         self.assertIn("/project [name]", text)
 

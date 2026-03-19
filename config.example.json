@@ -15,6 +15,11 @@
     "poll_interval_seconds": 2.0,
     "include_user_messages": false
   },
+  "security": {
+    "allow_unlisted_chats": false,
+    "require_existing_repos": true,
+    "require_git_repos": false
+  },
   "runtime": {
     "state_path": "./state.json",
     "log_path": "./codex-connector.log",

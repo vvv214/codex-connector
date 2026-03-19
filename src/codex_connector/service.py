@@ -7,13 +7,14 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .codex_adapter import CodexAdapter, CodexResult
-from .commands import parse_message
+from .commands import ParsedMessage, parse_message
 from .config import AppConfig
 from .codex_sessions import CodexSessionMonitor, SessionNotification, load_thread_snapshots
 from .models import ChatState, Project, TaskRun
 from .rendering import (
     render_help_text,
     render_last_task,
+    render_new_task_picker,
     render_project_sessions,
     render_status,
     render_task_result,
@@ -82,9 +83,9 @@ class BridgeService:
             return
 
         message = parse_message(update.text)
-        response = self._handle_parsed_message(update.chat_id, message.kind, message.argument, update.message_id)
+        response = self._handle_parsed_message(update.chat_id, message, update.message_id)
         if response and self.telegram is not None:
-            inline_keyboard = self._project_keyboard(update.chat_id) if message.kind == "project" else None
+            inline_keyboard = self._keyboard_for_message(update.chat_id, message)
             self.telegram.send_message(
                 update.chat_id,
                 response,
@@ -94,15 +95,16 @@ class BridgeService:
 
     def handle_message(self, chat_id: int, text: str, message_id: int | None = None) -> str | None:
         message = parse_message(text)
-        return self._handle_parsed_message(chat_id, message.kind, message.argument, message_id)
+        return self._handle_parsed_message(chat_id, message, message_id)
 
     def _handle_parsed_message(
         self,
         chat_id: int,
-        kind: str,
-        argument: str,
+        message: ParsedMessage,
         message_id: int | None = None,
     ) -> str | None:
+        kind = message.kind
+        argument = message.argument
         if kind == "empty":
             return None
         if kind == "help":
@@ -113,24 +115,37 @@ class BridgeService:
             return self.render_last(chat_id)
         if kind == "project":
             return self.switch_project(chat_id, argument)
+        if kind == "new" and not argument:
+            return self.prepare_new_task(chat_id)
         if kind in {"new", "continue"}:
-            return self.submit_task(chat_id, argument, kind, message_id=message_id)
+            mode = self._mode_for_message(chat_id, message)
+            response = self.submit_task(chat_id, argument, mode, message_id=message_id)
+            if response.startswith("Queued "):
+                self._set_pending_mode(chat_id, None)
+            return response
         if kind == "unknown":
             return "Unknown command. Send /help for usage."
-        return self.submit_task(chat_id, argument, "continue", message_id=message_id)
+        response = self.submit_task(chat_id, argument, "continue", message_id=message_id)
+        if response.startswith("Queued "):
+            self._set_pending_mode(chat_id, None)
+        return response
+
+    def _mode_for_message(self, chat_id: int, message: ParsedMessage) -> str:
+        if message.kind == "new":
+            return "new"
+        if not message.from_plain_text:
+            return message.kind
+        chat = self.store.get_chat(chat_id)
+        if chat is not None and chat.pending_mode in {"new", "continue"}:
+            return chat.pending_mode
+        return message.kind
 
     def _resolve_project(self, chat_id: int, project_name: str | None = None) -> Project:
         if project_name:
             project = self.config.project_by_name(project_name)
             if project is None:
                 raise ValueError(f"Unknown project: {project_name}")
-            self.store.upsert_chat(
-                chat_id,
-                project_name=project.name,
-                repo_path=project.repo_path,
-                last_active_at=time.time(),
-                active_project_name=project.name,
-            )
+            self._remember_project(chat_id, project)
             return project
 
         chat = self.store.get_chat(chat_id)
@@ -142,6 +157,10 @@ class BridgeService:
         project = self.config.default_project()
         if project is None:
             raise RuntimeError("No project is configured")
+        self._remember_project(chat_id, project)
+        return project
+
+    def _remember_project(self, chat_id: int, project: Project) -> None:
         self.store.upsert_chat(
             chat_id,
             project_name=project.name,
@@ -149,7 +168,11 @@ class BridgeService:
             last_active_at=time.time(),
             active_project_name=project.name,
         )
-        return project
+
+    def _set_pending_mode(self, chat_id: int, pending_mode: str | None) -> None:
+        if self.store.get_chat(chat_id) is None:
+            self._resolve_project(chat_id)
+        self.store.set_chat_pending_mode(chat_id, pending_mode)
 
     def _ensure_chat_state(self, chat_id: int) -> ChatState:
         chat = self.store.get_chat(chat_id)
@@ -167,14 +190,19 @@ class BridgeService:
         project = self.config.project_by_name(project_name)
         if project is None:
             return self.render_project_sessions(chat_id, prefix=f"Unknown project: {project_name}")
-        self.store.upsert_chat(
-            chat_id,
-            project_name=project.name,
-            repo_path=project.repo_path,
-            last_active_at=time.time(),
-            active_project_name=project.name,
-        )
+        self._remember_project(chat_id, project)
         return self.render_project_sessions(chat_id, prefix=f"Active project set to {project.name}")
+
+    def prepare_new_task(self, chat_id: int, project_name: str | None = None, prefix: str | None = None) -> str:
+        project = self._resolve_project(chat_id, project_name)
+        self._set_pending_mode(chat_id, "new")
+        intro = prefix or f"New task mode armed for {project.name}. Send the prompt after choosing a project."
+        return render_new_task_picker(
+            project.name,
+            self._recent_session_rows(),
+            max_chars=self.config.max_output_chars,
+            prefix=intro,
+        )
 
     def render_status(self, chat_id: int) -> str:
         chat = self._ensure_chat_state(chat_id)
@@ -234,16 +262,26 @@ class BridgeService:
     def _handle_callback_update(self, update: TelegramUpdate) -> None:
         if self.telegram is not None and update.callback_query_id:
             self.telegram.answer_callback_query(update.callback_query_id)
-        if not update.text.startswith("project:"):
+        action, _, project_name = update.text.partition(":")
+        project_name = project_name.strip()
+        if action not in {"project", "new"} or not project_name:
             return
-        project_name = update.text.split(":", 1)[1].strip()
-        response = self.switch_project(update.chat_id, project_name)
+        if action == "project":
+            response = self.switch_project(update.chat_id, project_name)
+            inline_keyboard = self._project_keyboard(update.chat_id, action="project")
+        else:
+            response = self.prepare_new_task(
+                update.chat_id,
+                project_name=project_name,
+                prefix=f"New task target set to {project_name}. Send the prompt for a fresh session.",
+            )
+            inline_keyboard = self._project_keyboard(update.chat_id, action="new")
         if response and self.telegram is not None:
             self.telegram.send_message(
                 update.chat_id,
                 response,
                 reply_to_message_id=update.message_id,
-                inline_keyboard=self._project_keyboard(update.chat_id),
+                inline_keyboard=inline_keyboard,
             )
 
     def _record_session_notification(self, chat_id: int, notification: SessionNotification) -> None:
@@ -257,13 +295,7 @@ class BridgeService:
                     break
         if project is None:
             return
-        self.store.upsert_chat(
-            chat_id,
-            project_name=project.name,
-            repo_path=project.repo_path,
-            last_active_at=time.time(),
-            active_project_name=project.name,
-        )
+        self._remember_project(chat_id, project)
 
     def submit_task(self, chat_id: int, prompt: str, mode: str, message_id: int | None = None) -> str:
         prompt = prompt.strip()
@@ -273,6 +305,7 @@ class BridgeService:
             return "A task is already running for this chat. Wait for it to finish before starting another."
 
         project = self._resolve_project(chat_id)
+        self._validate_project_runtime(project)
         task = self._enqueue_task(chat_id, project, prompt, mode)
         self._executor.submit(self._execute_task, task.task_id, project, prompt, mode, chat_id, message_id, True)
         return f"Queued {mode} task {task.task_id} for {project.name}"
@@ -284,6 +317,7 @@ class BridgeService:
         if self.store.running_task_for_chat(chat_id) is not None:
             raise RuntimeError("A task is already running for this chat.")
         project = self._resolve_project(chat_id, project_name)
+        self._validate_project_runtime(project)
         task = self._enqueue_task(chat_id, project, prompt, mode)
         return self._execute_task(task.task_id, project, prompt, mode, chat_id, message_id=None, notify=False)
 
@@ -302,6 +336,13 @@ class BridgeService:
         self.store.add_task(task)
         self.store.set_chat_task(chat_id, task_id, last_active_at=started_at)
         return task
+
+    def _validate_project_runtime(self, project: Project) -> None:
+        repo_path = Path(project.repo_path).expanduser().resolve()
+        if self.config.security.require_existing_repos and not repo_path.is_dir():
+            raise RuntimeError(f"Project repo_path does not exist: {repo_path}")
+        if self.config.security.require_git_repos and not (repo_path / ".git").exists():
+            raise RuntimeError(f"Project is not a git repository: {repo_path}")
 
     def _execute_task(
         self,
@@ -385,14 +426,23 @@ class BridgeService:
             rows.append((label, title, snapshot.updated_at))
         return rows
 
-    def _project_keyboard(self, chat_id: int) -> list[list[dict[str, str]]]:
+    def _keyboard_for_message(
+        self, chat_id: int, message: ParsedMessage
+    ) -> list[list[dict[str, str]]] | None:
+        if message.kind == "project":
+            return self._project_keyboard(chat_id, action="project")
+        if message.kind == "new" and not message.argument:
+            return self._project_keyboard(chat_id, action="new")
+        return None
+
+    def _project_keyboard(self, chat_id: int, action: str = "project") -> list[list[dict[str, str]]]:
         chat = self.store.get_chat(chat_id)
         active_name = None if chat is None else (chat.active_project_name or chat.project_name)
         keyboard: list[list[dict[str, str]]] = []
         row: list[dict[str, str]] = []
         for project in self.config.projects:
             label = project.name if project.name != active_name else f"• {project.name}"
-            row.append({"text": self._truncate_button_label(label), "callback_data": f"project:{project.name}"})
+            row.append({"text": self._truncate_button_label(label), "callback_data": f"{action}:{project.name}"})
             if len(row) == 2:
                 keyboard.append(row)
                 row = []

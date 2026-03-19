@@ -4,7 +4,7 @@ import argparse
 import sys
 
 from .codex_adapter import CodexAdapter
-from .config import apply_overrides, load_config
+from .config import apply_overrides, load_config, validate_config
 from .service import BridgeService, configure_logging
 from .state import StateStore
 from .telegram import TelegramBotClient
@@ -72,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         argv = sys.argv[1:]
     args = parser.parse_args(_normalize_argv(list(argv)))
     config = apply_overrides(load_config(args.config), state_path=args.state, log_path=args.log)
+    validate_config(config, for_serve=args.command == "serve")
     logger = configure_logging(config.log_file)
     store = StateStore(config.state_file)
     store.load()

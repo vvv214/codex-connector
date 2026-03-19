@@ -82,6 +82,7 @@ class ServiceTests(unittest.TestCase):
     def test_rejects_overlapping_task_submission(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
+            (root / "repo").mkdir()
             config_path = root / "config.json"
             config_path.write_text(
                 """
@@ -116,6 +117,7 @@ class ServiceTests(unittest.TestCase):
     def test_run_task_sync_persists_chat_binding_and_task(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
+            (root / "repo").mkdir()
             config_path = root / "config.json"
             config_path.write_text(
                 """
@@ -349,6 +351,70 @@ class ServiceTests(unittest.TestCase):
             self.assertIn("project:alpha", flat)
             self.assertIn("project:beta", flat)
 
+    def test_new_without_prompt_sends_project_picker_and_arms_pending_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config_path = root / "config.json"
+            config_path.write_text(
+                """
+                {
+                  "projects": [
+                    {"name": "alpha", "repo_path": "./repo-a"},
+                    {"name": "beta", "repo_path": "./repo-b"}
+                  ]
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            (root / "repo-a").mkdir()
+            (root / "repo-b").mkdir()
+            config = load_config(config_path)
+            store = StateStore(root / "state.json")
+            store.load()
+            telegram = FakeTelegram()
+            service = BridgeService(config=config, store=store, adapter=FakeAdapter(), telegram=telegram)
+
+            service.handle_telegram_update(TelegramUpdate(update_id=1, chat_id=7, text="/new", message_id=11))
+
+            self.assertEqual(len(telegram.sent), 1)
+            self.assertIn("New task mode armed", str(telegram.sent[0]["text"]))
+            keyboard = telegram.sent[0]["inline_keyboard"]
+            self.assertIsNotNone(keyboard)
+            assert keyboard is not None
+            flat = [button["callback_data"] for row in keyboard for button in row]
+            self.assertIn("new:alpha", flat)
+            self.assertIn("new:beta", flat)
+            self.assertEqual(store.get_chat(7).pending_mode, "new")
+
+    def test_plain_text_after_new_picker_runs_new_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config_path = root / "config.json"
+            config_path.write_text(
+                """
+                {
+                  "projects": [{"name": "alpha", "repo_path": "./repo-a"}]
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            (root / "repo-a").mkdir()
+            config = load_config(config_path)
+            store = StateStore(root / "state.json")
+            store.load()
+            service = BridgeService(config=config, store=store, adapter=FakeAdapter())
+
+            picker = service.handle_message(7, "/new")
+            queued = service.handle_message(7, "start fresh")
+
+            self.assertIsNotNone(picker)
+            self.assertIn("Queued new task", str(queued))
+            task = store.last_task_for_project("alpha")
+            self.assertIsNotNone(task)
+            assert task is not None
+            self.assertEqual(task.mode, "new")
+            self.assertIsNone(store.get_chat(7).pending_mode)
+
     def test_project_callback_switches_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -387,6 +453,52 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(telegram.answered_callbacks, ["cb-1"])
             self.assertEqual(len(telegram.sent), 1)
             self.assertIn("Active project set to beta", str(telegram.sent[0]["text"]))
+
+    def test_new_callback_sets_project_and_keeps_new_picker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config_path = root / "config.json"
+            config_path.write_text(
+                """
+                {
+                  "projects": [
+                    {"name": "alpha", "repo_path": "./repo-a"},
+                    {"name": "beta", "repo_path": "./repo-b"}
+                  ]
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            (root / "repo-a").mkdir()
+            (root / "repo-b").mkdir()
+            config = load_config(config_path)
+            store = StateStore(root / "state.json")
+            store.load()
+            telegram = FakeTelegram()
+            service = BridgeService(config=config, store=store, adapter=FakeAdapter(), telegram=telegram)
+
+            service.handle_telegram_update(
+                TelegramUpdate(
+                    update_id=2,
+                    chat_id=7,
+                    text="new:beta",
+                    message_id=12,
+                    kind="callback",
+                    callback_query_id="cb-2",
+                )
+            )
+
+            self.assertEqual(store.get_chat(7).active_project_name, "beta")
+            self.assertEqual(store.get_chat(7).pending_mode, "new")
+            self.assertEqual(telegram.answered_callbacks, ["cb-2"])
+            self.assertEqual(len(telegram.sent), 1)
+            self.assertIn("New task target set to beta", str(telegram.sent[0]["text"]))
+            keyboard = telegram.sent[0]["inline_keyboard"]
+            self.assertIsNotNone(keyboard)
+            assert keyboard is not None
+            flat = [button["callback_data"] for row in keyboard for button in row]
+            self.assertIn("new:alpha", flat)
+            self.assertIn("new:beta", flat)
 
     def test_configure_logging_creates_parent_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

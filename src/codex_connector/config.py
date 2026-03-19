@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from .models import AppConfig, CodexSessionsConfig, Project
+from .models import AppConfig, CodexSessionsConfig, Project, SecurityConfig
 
 
 class ConfigError(ValueError):
@@ -92,6 +92,19 @@ def _parse_codex_sessions(payload: dict[str, Any], base_dir: Path) -> CodexSessi
     )
 
 
+def _parse_security(payload: dict[str, Any]) -> SecurityConfig:
+    raw = _lookup(payload, ("security",), default={})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ConfigError("config.security must be an object")
+    return SecurityConfig(
+        allow_unlisted_chats=bool(raw.get("allow_unlisted_chats", False)),
+        require_existing_repos=bool(raw.get("require_existing_repos", True)),
+        require_git_repos=bool(raw.get("require_git_repos", False)),
+    )
+
+
 def load_config(config_path: str | Path) -> AppConfig:
     path = Path(config_path).expanduser().resolve()
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -148,6 +161,7 @@ def load_config(config_path: str | Path) -> AppConfig:
         default=30,
     )
     codex_sessions = _parse_codex_sessions(payload, path.parent)
+    security = _parse_security(payload)
     log_path = _lookup(payload, ("log_file",), ("log_path",), ("runtime", "log_path"), default=None)
     state_path = _lookup(payload, ("state_file",), ("state_path",), ("runtime", "state_path"), default=None)
     max_output_chars = _lookup(payload, ("max_output_chars",), ("runtime", "max_output_chars"), default=1200)
@@ -159,6 +173,7 @@ def load_config(config_path: str | Path) -> AppConfig:
         codex_binary=str(codex_binary).strip() or "codex",
         codex_timeout_seconds=int(codex_timeout_seconds),
         codex_sessions=codex_sessions,
+        security=security,
         poll_timeout_seconds=int(poll_timeout_seconds),
         poll_sleep_seconds=float(poll_sleep_seconds),
         request_timeout_seconds=int(request_timeout_seconds),
@@ -178,3 +193,17 @@ def apply_overrides(config: AppConfig, *, state_path: str | Path | None = None, 
     if not updates:
         return config
     return replace(config, **updates)
+
+
+def validate_config(config: AppConfig, *, for_serve: bool = False) -> None:
+    if for_serve and not config.allowed_chat_ids and not config.security.allow_unlisted_chats:
+        raise ConfigError(
+            "allowed_chat_ids must be configured for serve mode unless security.allow_unlisted_chats is true"
+        )
+
+    for project in config.projects:
+        repo_path = Path(project.repo_path).expanduser().resolve()
+        if config.security.require_existing_repos and not repo_path.is_dir():
+            raise ConfigError(f"project {project.name!r} repo_path does not exist: {repo_path}")
+        if config.security.require_git_repos and not (repo_path / ".git").exists():
+            raise ConfigError(f"project {project.name!r} is not a git repository: {repo_path}")
