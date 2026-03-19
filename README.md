@@ -43,6 +43,22 @@ There are only two moving parts in the core:
 
 Today the built-in runner is `codex`. The runner boundary is intentionally small so a fork or focused PR can swap in another local CLI without rewriting the Telegram flow.
 
+## Positioning
+
+This repo is deliberately narrower than tools like [OpenClaw](https://github.com/openclaw/openclaw) or [nanochat](https://github.com/karpathy/nanochat):
+
+| Project | Primary job |
+| --- | --- |
+| `codex-connector` | Remote-control a local agent CLI from Telegram |
+| `OpenClaw` | General personal AI assistant across many chat apps, tools, nodes, and skills |
+| `nanochat` | Minimal experimental harness for training, finetuning, evaluating, and chatting with your own LLM |
+
+In other words:
+
+- If you want a thin Telegram bridge for your existing local coding workflow, this repo is the right shape.
+- If you want an always-on multi-channel assistant with broader tooling and automation, OpenClaw is closer.
+- If you want to train or serve your own model stack, nanochat is solving a different problem entirely.
+
 ## Demo
 
 Full walkthrough: [docs/demo.md](docs/demo.md)
@@ -219,6 +235,8 @@ If you want to use another local CLI, the intended customization point is the ru
 
 The core repo only ships `codex` by default. First-party support for every agent CLI is intentionally out of scope.
 
+Minimal template: [docs/custom-runner.md](docs/custom-runner.md)
+
 ## Realtime Session Mirroring
 
 When `codex_sessions.enabled` is `true`, the bridge reads the local Codex `threads` table in read-only mode and mirrors activity from every local session:
@@ -292,5 +310,6 @@ codex-connector last --config ./config.json --chat-id 390429375
 ## Repository
 
 - Demo walkthrough: [docs/demo.md](docs/demo.md)
+- Custom runner notes: [docs/custom-runner.md](docs/custom-runner.md)
 - Example config: [config.example.json](config.example.json)
 - Package metadata: [pyproject.toml](pyproject.toml)
