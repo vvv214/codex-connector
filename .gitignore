@@ -31,6 +31,7 @@ state.json
 *.state.json
 codex-connector.log
 *.log
+.codex-connector-serve.lock
 
 # Editor and OS files
 .DS_Store

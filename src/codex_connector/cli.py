@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from .config import apply_overrides, load_config, validate_config
 from .runner import create_runner
 from .service import BridgeService, configure_logging
+from .single_instance import SingleInstanceError, SingleInstanceLock
 from .state import StateStore
 from .telegram import TelegramBotClient
 
@@ -74,6 +76,13 @@ def main(argv: list[str] | None = None) -> int:
     config = apply_overrides(load_config(args.config), state_path=args.state, log_path=args.log)
     validate_config(config, for_serve=args.command == "serve")
     logger = configure_logging(config.log_file)
+    serve_lock: SingleInstanceLock | None = None
+    if args.command == "serve":
+        serve_lock = SingleInstanceLock(Path.home() / ".codex" / "codex-connector" / "serve.lock")
+        try:
+            serve_lock.acquire()
+        except SingleInstanceError as exc:
+            raise SystemExit(str(exc)) from exc
     store = StateStore(config.state_file)
     store.load()
     adapter = create_runner(config)
@@ -128,6 +137,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     finally:
         service.close()
+        if serve_lock is not None:
+            serve_lock.release()
 
 
 if __name__ == "__main__":
