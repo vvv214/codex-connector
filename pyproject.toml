@@ -5,11 +5,28 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "codex-connector"
 version = "0.1.0"
-description = "Local bridge for driving Codex from Telegram"
+description = "Local-first Telegram bridge for driving Codex from your phone"
 requires-python = ">=3.11"
+readme = "README.md"
+keywords = ["codex", "telegram", "cli", "agent", "automation"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Communications :: Chat",
+]
 
 [project.scripts]
 codex-connector = "codex_connector.cli:main"
+
+[project.urls]
+Repository = "https://github.com/vvv214/codex-connector"
+Issues = "https://github.com/vvv214/codex-connector/issues"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
