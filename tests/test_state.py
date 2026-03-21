@@ -67,6 +67,7 @@ class StateStoreTests(unittest.TestCase):
                 repo_path="/repo-b",
                 last_active_at=2.0,
                 active_project_name="beta",
+                pinned_project_name="beta",
             )
 
             chat = store.get_chat(7)
@@ -75,6 +76,7 @@ class StateStoreTests(unittest.TestCase):
             self.assertEqual(chat.repo_path, "/repo-b")
             self.assertEqual(chat.current_task_id, "task-7")
             self.assertEqual(chat.active_project_name, "beta")
+            self.assertEqual(chat.pinned_project_name, "beta")
 
     def test_set_chat_pending_mode_persists(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

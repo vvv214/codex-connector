@@ -27,10 +27,20 @@ def _fmt_time(timestamp: float | None) -> str:
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _task_result_icon(status: str) -> str:
+    icons = {
+        "done": "🟢",
+        "failed": "🔴",
+        "running": "🔹",
+        "queued": "🔵",
+    }
+    return icons.get(status, "⚪")
+
+
 def render_help_text() -> str:
     return (
         "Commands:\n"
-        "/project [name]  list active project and recent sessions, or switch active project\n"
+        "/project [name]  list projects, pin one, or use /project latest to follow the newest session\n"
         "/new [prompt]    start a new Codex session, or open a project picker\n"
         "/continue <prompt>  continue the latest session\n"
         "/last            show the latest task for the active project\n"
@@ -78,8 +88,8 @@ def render_project_sessions(
     prefix: str | None = None,
 ) -> str:
     return _render_session_overview(
-        active_label=f"Active project: {active_project_name or 'n/a'}",
-        instruction="Tap a button below or use /project <name> to switch.",
+        active_label=f"Routing: {active_project_name or 'n/a'}",
+        instruction="Tap a project below to pin it, or tap Follow latest to stay on the newest session.",
         sessions=sessions,
         max_chars=max_chars,
         prefix=prefix,
@@ -104,9 +114,14 @@ def render_new_task_picker(
 def render_status(chat: ChatState | None, project: Project | None, task: TaskRun | None) -> str:
     if chat is None or project is None:
         return "No active project. Use /project <name> first."
+    if chat.pinned_project_name:
+        routing = f"pinned to {chat.pinned_project_name}"
+    else:
+        routing = f"following latest ({chat.project_name})"
     lines = [
         f"Project: {project.name}",
         f"Repo: {project.repo_path}",
+        f"Routing: {routing}",
         f"Last active: {_fmt_time(chat.last_active_at)}",
     ]
     if task is None:
@@ -140,8 +155,17 @@ def render_last_task(task: TaskRun | None) -> str:
     return "\n".join(lines)
 
 
+def render_task_notification(task: TaskRun, output: str) -> str:
+    header = f"{_task_result_icon(task.status)} [{task.project_name}]"
+    body = (output or "").strip()
+    if not body:
+        body = task.summary.strip() or "No output."
+    return f"{header}\n{body}"
+
+
 def render_task_result(task: TaskRun, max_chars: int = 4000) -> str:
     lines = [
+        f"{_task_result_icon(task.status)} {task.project_name}",
         f"Project: {task.project_name}",
         f"Mode: {task.mode}",
         f"Status: {task.status}",
@@ -149,11 +173,11 @@ def render_task_result(task: TaskRun, max_chars: int = 4000) -> str:
         f"Duration: {max(0.0, (task.ended_at or task.started_at) - task.started_at):.1f}s",
     ]
     if task.summary:
-        lines.extend(["", task.summary])
+        lines.extend(["", "Summary:", task.summary])
     details = ""
     if task.status != "done":
         details = task.stderr_tail or task.stdout_tail
     if details:
-        lines.extend(["", "Details", details])
+        lines.extend(["", "Output:", details])
     text = "\n".join(lines).strip()
     return tail_text(text, max_chars)

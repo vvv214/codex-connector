@@ -4,6 +4,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
@@ -50,25 +51,25 @@ def _workspace_name(cwd: str) -> str:
     return path.as_posix().strip() or "session"
 
 
-def _session_label(event_type: str) -> str:
-    labels = {
-        "task_started": "started",
-        "task_complete": "completed",
-        "agent_message": "update",
-        "user_message": "user",
-    }
-    return labels.get(event_type, event_type.replace("_", " "))
-
-
 def _compact(text: str) -> str:
     return " ".join((text or "").split())
 
 
-def _short_title(text: str, fallback: str) -> str:
+def _short_title(text: str, fallback: str, *, limit: int = 28) -> str:
     compact = _compact(text)
     if not compact:
         compact = fallback
-    return _truncate(compact, 28)
+    return _truncate(compact, limit)
+
+
+def _notification_icon(event_type: str) -> str:
+    icons = {
+        "task_started": "🔵",
+        "task_complete": "🟢",
+        "agent_message": "🔹",
+        "user_message": "⚪",
+    }
+    return icons.get(event_type, "⚪")
 
 
 def _preferred_db_title(title: str, first_user_message: str) -> str:
@@ -134,13 +135,16 @@ def display_thread_title(
     *,
     topic_source: str | None = None,
     allow_rollout_scan: bool = True,
+    prefer_topic: bool = False,
     logger: logging.Logger | None = None,
 ) -> str:
+    topic = _topic_from_text(topic_source or "")
     preferred_title = _preferred_db_title(thread.title, thread.first_user_message)
+    if prefer_topic and topic:
+        return topic
     if preferred_title:
         return preferred_title
 
-    topic = _topic_from_text(topic_source or "")
     if topic:
         return topic
 
@@ -154,14 +158,20 @@ def display_thread_title(
 
 
 def format_notification(notification: SessionNotification) -> str:
-    title = _short_title(notification.title, notification.thread_id[:8])
-    header = f"[{notification.workspace}] {title} · {_session_label(notification.event_type)}"
-    if notification.event_type == "agent_message":
-        body = _truncate(_compact(notification.body), 160)
-    elif notification.event_type == "task_started":
+    icon = _notification_icon(notification.event_type)
+    header_prefix = f"{icon} [{notification.workspace}] "
+    title = _short_title(
+        notification.title,
+        notification.thread_id[:8],
+        limit=max(16, 80 - len(header_prefix)),
+    )
+    header = f"{header_prefix}{title}"
+    if notification.event_type in {"agent_message", "task_started"}:
         body = ""
     else:
         body = notification.body.strip()
+    if body and _compact(body) == _compact(notification.title):
+        body = ""
     if body:
         return f"{header}\n{body}"
     return header
@@ -244,17 +254,19 @@ def parse_rollout_line(
         body = topic_source
         if last_agent_body and body and body == last_agent_body.strip():
             body = ""
-        if body:
-            body = f"Completed.\n{body}"
-        else:
-            body = "Completed."
+            topic_source = ""
     else:
         return None
 
     return SessionNotification(
         thread_id=thread.thread_id,
         workspace=_workspace_name(thread.cwd),
-        title=display_thread_title(thread, topic_source=topic_source, allow_rollout_scan=False),
+        title=display_thread_title(
+            thread,
+            topic_source=topic_source,
+            allow_rollout_scan=False,
+            prefer_topic=event_type in {"agent_message", "task_complete"},
+        ),
         event_type=event_type,
         body=body,
         repo_path=thread.cwd,
@@ -273,6 +285,7 @@ class CodexSessionMonitor:
         send_message: Callable[[int, str], None],
         on_notification: Callable[[int, SessionNotification], None] | None = None,
         logger: logging.Logger,
+        agent_update_interval_seconds: float = 60.0,
     ):
         self.state_db_path = Path(state_db_path).expanduser()
         self.poll_interval_seconds = float(poll_interval_seconds)
@@ -281,11 +294,14 @@ class CodexSessionMonitor:
         self._send_message = send_message
         self._on_notification = on_notification
         self._logger = logger
+        self._agent_update_interval_seconds = max(0.0, float(agent_update_interval_seconds))
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
         self._primed = False
         self._offsets: dict[str, int | None] = {}
+        self._pending_agent_updates: dict[str, SessionNotification] = {}
+        self._last_agent_notification_at: dict[str, float] = {}
 
     def start(self) -> None:
         with self._lock:
@@ -323,6 +339,7 @@ class CodexSessionMonitor:
         threads = load_thread_snapshots(self.state_db_path, self._logger)
         for thread in threads:
             notifications += self._poll_thread(thread)
+        notifications += self._flush_due_agent_updates()
         return notifications
 
     def _run(self) -> None:
@@ -353,6 +370,7 @@ class CodexSessionMonitor:
 
             notifications = 0
             last_agent_body: str | None = None
+            buffered_agent_notification: SessionNotification | None = None
             try:
                 with thread.rollout_path.open("rb") as handle:
                     handle.seek(offset)
@@ -375,8 +393,31 @@ class CodexSessionMonitor:
                             continue
                         if notification.event_type == "agent_message":
                             last_agent_body = notification.body
-                        self._emit(notification)
-                        notifications += 1
+                            buffered_agent_notification = notification
+                            continue
+
+                        if buffered_agent_notification is not None:
+                            if notification.event_type == "task_complete":
+                                if not notification.body.strip():
+                                    latest = _truncate(
+                                        _compact(
+                                            buffered_agent_notification.body
+                                            or buffered_agent_notification.title
+                                        ),
+                                        160,
+                                    )
+                                    if latest:
+                                        notification.body = latest
+                                        notification.title = buffered_agent_notification.title
+                                elif not notification.title.strip():
+                                    notification.title = buffered_agent_notification.title
+                            else:
+                                notifications += self._emit(buffered_agent_notification)
+                            buffered_agent_notification = None
+
+                        notifications += self._emit(notification)
+                    if buffered_agent_notification is not None:
+                        notifications += self._emit(buffered_agent_notification)
             except Exception:
                 self._logger.exception(
                     "failed to read rollout file for thread_id=%s path=%s",
@@ -385,7 +426,45 @@ class CodexSessionMonitor:
                 )
             return notifications
 
-    def _emit(self, notification: SessionNotification) -> None:
+    def _emit(self, notification: SessionNotification) -> int:
+        if notification.event_type == "agent_message":
+            self._pending_agent_updates[notification.thread_id] = notification
+            return self._flush_due_agent_updates(notification.thread_id)
+        if notification.event_type == "task_started":
+            self._last_agent_notification_at[notification.thread_id] = time.time()
+            self._pending_agent_updates.pop(notification.thread_id, None)
+        elif notification.event_type == "task_complete":
+            pending = self._pending_agent_updates.pop(notification.thread_id, None)
+            self._last_agent_notification_at.pop(notification.thread_id, None)
+            if pending is not None and not notification.body.strip():
+                latest = _truncate(_compact(pending.body or pending.title), 160)
+                if latest:
+                    notification.body = latest
+        self._deliver(notification)
+        return 1
+
+    def _flush_due_agent_updates(self, thread_id: str | None = None) -> int:
+        now = time.time()
+        notifications = 0
+        thread_ids = [thread_id] if thread_id is not None else list(self._pending_agent_updates)
+        for candidate in thread_ids:
+            notification = self._pending_agent_updates.get(candidate)
+            if notification is None:
+                continue
+            last_sent_at = self._last_agent_notification_at.get(candidate)
+            if (
+                last_sent_at is not None
+                and self._agent_update_interval_seconds > 0
+                and now - last_sent_at < self._agent_update_interval_seconds
+            ):
+                continue
+            self._pending_agent_updates.pop(candidate, None)
+            self._last_agent_notification_at[candidate] = now
+            self._deliver(notification)
+            notifications += 1
+        return notifications
+
+    def _deliver(self, notification: SessionNotification) -> None:
         text = format_notification(notification)
         chat_ids = list(dict.fromkeys(self._target_chat_ids()))
         for chat_id in chat_ids:

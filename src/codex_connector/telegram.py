@@ -22,6 +22,14 @@ class TelegramApiError(RuntimeError):
 
 class TelegramBotClient:
     _MAX_MESSAGE_CHARS = 4096
+    _DEFAULT_COMMANDS: tuple[tuple[str, str], ...] = (
+        ("project", "List projects or switch the active project"),
+        ("new", "Start a fresh Codex session"),
+        ("continue", "Continue the latest session"),
+        ("last", "Show the latest task"),
+        ("status", "Show active project and running state"),
+        ("help", "Show help"),
+    )
 
     def __init__(self, token: str, timeout_seconds: int = 30):
         self.token = token
@@ -97,6 +105,18 @@ class TelegramBotClient:
         payload = {"callback_query_id": callback_query_id}
         data = parse.urlencode(payload).encode("utf-8")
         req = request.Request(f"{self.base_url}/answerCallbackQuery", data=data, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        self._request_json(req)
+
+    def set_default_commands(self) -> None:
+        payload = {
+            "commands": json.dumps(
+                [{"command": command, "description": description} for command, description in self._DEFAULT_COMMANDS],
+                separators=(",", ":"),
+            )
+        }
+        data = parse.urlencode(payload).encode("utf-8")
+        req = request.Request(f"{self.base_url}/setMyCommands", data=data, method="POST")
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
         self._request_json(req)
 

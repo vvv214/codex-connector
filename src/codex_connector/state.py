@@ -7,6 +7,8 @@ from pathlib import Path
 
 from .models import ChatState, TaskRun
 
+_UNSET = object()
+
 
 class StateStore:
     def __init__(self, path: str | Path):
@@ -31,6 +33,7 @@ class StateStore:
                     last_active_at=float(raw["last_active_at"]),
                     current_task_id=raw.get("current_task_id"),
                     active_project_name=raw.get("active_project_name"),
+                    pinned_project_name=raw.get("pinned_project_name"),
                     pending_mode=raw.get("pending_mode"),
                 )
                 chats[int(key)] = chat
@@ -85,6 +88,7 @@ class StateStore:
         last_active_at: float | None = None,
         current_task_id: str | None = None,
         active_project_name: str | None = None,
+        pinned_project_name: str | None | object = _UNSET,
     ) -> ChatState:
         with self._lock:
             chat = self._chats.get(chat_id)
@@ -101,6 +105,7 @@ class StateStore:
                     last_active_at=last_active_at,
                     current_task_id=current_task_id,
                     active_project_name=active_project_name,
+                    pinned_project_name=(None if pinned_project_name is _UNSET else pinned_project_name),
                 )
             else:
                 if project_name is not None:
@@ -113,6 +118,8 @@ class StateStore:
                     chat.current_task_id = current_task_id
                 if active_project_name is not None:
                     chat.active_project_name = active_project_name
+                if pinned_project_name is not _UNSET:
+                    chat.pinned_project_name = pinned_project_name
 
             self._chats[chat_id] = chat
             self.save()

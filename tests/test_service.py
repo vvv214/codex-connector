@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import tempfile
+import time
 import unittest
 import sys
 from pathlib import Path
@@ -39,6 +40,7 @@ class FakeTelegram:
     def __init__(self) -> None:
         self.sent: list[dict[str, object]] = []
         self.answered_callbacks: list[str] = []
+        self.commands_registered = False
 
     def send_message(
         self,
@@ -60,6 +62,9 @@ class FakeTelegram:
 
     def answer_callback_query(self, callback_query_id: str) -> None:
         self.answered_callbacks.append(callback_query_id)
+
+    def set_default_commands(self) -> None:
+        self.commands_registered = True
 
 
 class ServiceTests(unittest.TestCase):
@@ -191,7 +196,7 @@ class ServiceTests(unittest.TestCase):
 
             self.assertEqual(task.project_name, "beta")
             self.assertEqual(store.get_chat(42).project_name, "beta")
-            self.assertEqual(store.get_chat(42).active_project_name, "beta")
+            self.assertIsNone(store.get_chat(42).pinned_project_name)
 
     def test_session_message_is_silent_when_desktop_is_active(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -325,7 +330,7 @@ class ServiceTests(unittest.TestCase):
 
             self.assertIsNotNone(text)
             assert text is not None
-            self.assertIn("Active project: alpha", text)
+            self.assertIn("Routing: following latest (alpha)", text)
             self.assertIn("Recent sessions:", text)
             self.assertLess(text.index("Newest beta session"), text.index("Older alpha session"))
 
@@ -461,10 +466,10 @@ class ServiceTests(unittest.TestCase):
 
             self.assertIsNotNone(text)
             assert text is not None
-            self.assertIn("Active project set to beta", text)
+            self.assertIn("Pinned project to beta", text)
             self.assertIn("Newest beta session", text)
             self.assertEqual(store.get_chat(7).project_name, "beta")
-            self.assertEqual(store.get_chat(7).active_project_name, "beta")
+            self.assertEqual(store.get_chat(7).pinned_project_name, "beta")
 
     def test_project_command_sends_inline_keyboard(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -492,11 +497,12 @@ class ServiceTests(unittest.TestCase):
             service.handle_telegram_update(TelegramUpdate(update_id=1, chat_id=7, text="/project", message_id=11))
 
             self.assertEqual(len(telegram.sent), 1)
-            self.assertIn("Active project:", str(telegram.sent[0]["text"]))
+            self.assertIn("Routing:", str(telegram.sent[0]["text"]))
             keyboard = telegram.sent[0]["inline_keyboard"]
             self.assertIsNotNone(keyboard)
             assert keyboard is not None
             flat = [button["callback_data"] for row in keyboard for button in row]
+            self.assertIn("project:__latest__", flat)
             self.assertIn("project:alpha", flat)
             self.assertIn("project:beta", flat)
 
@@ -555,14 +561,51 @@ class ServiceTests(unittest.TestCase):
 
             picker = service.handle_message(7, "/new")
             queued = service.handle_message(7, "start fresh")
+            for _ in range(50):
+                task = store.last_task_for_project("alpha")
+                if task is not None and task.status == "done" and store.get_chat(7).current_task_id is None:
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("timed out waiting for async task to finish")
 
             self.assertIsNotNone(picker)
-            self.assertIn("Queued new task", str(queued))
-            task = store.last_task_for_project("alpha")
+            self.assertIsNone(queued)
             self.assertIsNotNone(task)
             assert task is not None
             self.assertEqual(task.mode, "new")
             self.assertIsNone(store.get_chat(7).pending_mode)
+
+    def test_task_notification_returns_full_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config_path = root / "config.json"
+            config_path.write_text(
+                """
+                {
+                  "projects": [{"name": "alpha", "repo_path": "./repo-a"}]
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            (root / "repo-a").mkdir()
+            config = load_config(config_path)
+            store = StateStore(root / "state.json")
+            store.load()
+            telegram = FakeTelegram()
+            service = BridgeService(config=config, store=store, adapter=FakeAdapter(), telegram=telegram)
+
+            project = service._resolve_project(7)
+            task = service._enqueue_task(7, project, "ok proceed", "continue")
+            completed = service._execute_task(task.task_id, project, "ok proceed", "continue", 7, 21, True)
+
+            self.assertEqual(completed.status, "done")
+            self.assertEqual(len(telegram.sent), 1)
+            self.assertEqual(telegram.sent[0]["reply_to_message_id"], 21)
+            self.assertEqual(
+                telegram.sent[0]["text"],
+                f"🟢 [alpha]\nrepo={project.repo_path} prompt=ok proceed mode=continue",
+            )
 
     def test_project_callback_switches_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -598,10 +641,10 @@ class ServiceTests(unittest.TestCase):
                 )
             )
 
-            self.assertEqual(store.get_chat(7).active_project_name, "beta")
+            self.assertEqual(store.get_chat(7).pinned_project_name, "beta")
             self.assertEqual(telegram.answered_callbacks, ["cb-1"])
             self.assertEqual(len(telegram.sent), 1)
-            self.assertIn("Active project set to beta", str(telegram.sent[0]["text"]))
+            self.assertIn("Pinned project to beta", str(telegram.sent[0]["text"]))
 
     def test_new_callback_sets_project_and_keeps_new_picker(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -637,7 +680,7 @@ class ServiceTests(unittest.TestCase):
                 )
             )
 
-            self.assertEqual(store.get_chat(7).active_project_name, "beta")
+            self.assertEqual(store.get_chat(7).pinned_project_name, "beta")
             self.assertEqual(store.get_chat(7).pending_mode, "new")
             self.assertEqual(telegram.answered_callbacks, ["cb-2"])
             self.assertEqual(len(telegram.sent), 1)
@@ -648,6 +691,93 @@ class ServiceTests(unittest.TestCase):
             flat = [button["callback_data"] for row in keyboard for button in row]
             self.assertIn("new:alpha", flat)
             self.assertIn("new:beta", flat)
+
+    def test_manual_project_pin_survives_session_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "repo-a").mkdir()
+            (root / "repo-b").mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                """
+                {
+                  "projects": [
+                    {"name": "alpha", "repo_path": "./repo-a"},
+                    {"name": "beta", "repo_path": "./repo-b"}
+                  ]
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            store = StateStore(root / "state.json")
+            store.load()
+            service = BridgeService(config=config, store=store, adapter=FakeAdapter())
+
+            service.handle_message(7, "/project alpha")
+
+            from codex_connector.codex_sessions import SessionNotification
+
+            service._record_session_notification(
+                7,
+                SessionNotification(
+                    thread_id="thread-1",
+                    workspace="beta",
+                    title="Recent beta work",
+                    event_type="agent_message",
+                    repo_path=str((root / "repo-b").resolve()),
+                ),
+            )
+
+            task = service.run_task_sync(7, "follow up", "continue")
+
+            self.assertEqual(store.get_chat(7).project_name, "beta")
+            self.assertEqual(store.get_chat(7).pinned_project_name, "alpha")
+            self.assertEqual(task.project_name, "alpha")
+
+    def test_project_latest_clears_manual_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "repo-a").mkdir()
+            (root / "repo-b").mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                """
+                {
+                  "projects": [
+                    {"name": "alpha", "repo_path": "./repo-a"},
+                    {"name": "beta", "repo_path": "./repo-b"}
+                  ]
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            store = StateStore(root / "state.json")
+            store.load()
+            service = BridgeService(config=config, store=store, adapter=FakeAdapter())
+
+            service.handle_message(7, "/project alpha")
+
+            from codex_connector.codex_sessions import SessionNotification
+
+            service._record_session_notification(
+                7,
+                SessionNotification(
+                    thread_id="thread-2",
+                    workspace="beta",
+                    title="Recent beta work",
+                    event_type="agent_message",
+                    repo_path=str((root / "repo-b").resolve()),
+                ),
+            )
+
+            text = service.handle_message(7, "/project latest")
+            task = service.run_task_sync(7, "follow up", "continue")
+
+            self.assertIn("Now following the latest session again.", str(text))
+            self.assertIsNone(store.get_chat(7).pinned_project_name)
+            self.assertEqual(task.project_name, "beta")
 
     def test_configure_logging_creates_parent_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

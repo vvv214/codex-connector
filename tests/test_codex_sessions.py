@@ -79,10 +79,9 @@ class CodexSessionTests(unittest.TestCase):
         self.assertIsNotNone(notification)
         assert notification is not None
         rendered = format_notification(notification)
-        self.assertIn("[example-project]", rendered)
-        self.assertIn("update", rendered)
+        self.assertIn("🔹 [example-project]", rendered)
+        self.assertEqual(len(rendered.splitlines()), 1)
         self.assertLessEqual(len(rendered.splitlines()[0]), 80)
-        self.assertLess(len(rendered.splitlines()[-1]), 200)
 
     def test_parse_rollout_line_dedupes_completed_body(self) -> None:
         thread = CodexThreadSnapshot(
@@ -104,7 +103,7 @@ class CodexSessionTests(unittest.TestCase):
         assert notification is not None
         self.assertEqual(notification.event_type, "task_complete")
         self.assertEqual(notification.workspace, "example-project")
-        self.assertIn("Completed.", notification.body)
+        self.assertEqual(notification.body, "")
         self.assertNotIn("Final body", format_notification(notification))
 
     def test_completed_notification_keeps_full_body(self) -> None:
@@ -126,7 +125,7 @@ class CodexSessionTests(unittest.TestCase):
         self.assertIsNotNone(notification)
         assert notification is not None
         rendered = format_notification(notification)
-        self.assertIn("Completed.", rendered)
+        self.assertIn("🟢 [example-project]", rendered)
         self.assertIn(message.strip(), rendered)
 
     def test_parse_rollout_line_uses_recent_topic_when_title_is_stale(self) -> None:
@@ -154,7 +153,7 @@ class CodexSessionTests(unittest.TestCase):
         assert notification is not None
         self.assertEqual(notification.title, "Refactor Telegram session titles to use the latest topic summary")
 
-    def test_parse_rollout_line_prefers_explicit_thread_title(self) -> None:
+    def test_parse_rollout_line_prefers_latest_topic_for_agent_messages(self) -> None:
         notification = parse_rollout_line(
             json.dumps({"payload": {"type": "agent_message", "message": "Current work is different now"}}),
             CodexThreadSnapshot(
@@ -170,7 +169,7 @@ class CodexSessionTests(unittest.TestCase):
 
         self.assertIsNotNone(notification)
         assert notification is not None
-        self.assertEqual(notification.title, "Renamed session title")
+        self.assertEqual(notification.title, "Current work is different now")
 
     def test_monitor_skips_existing_history_and_reads_new_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -232,6 +231,7 @@ class CodexSessionTests(unittest.TestCase):
                 target_chat_ids=lambda: [390429375],
                 send_message=collector.send,
                 logger=logging.getLogger("test.codex_sessions"),
+                agent_update_interval_seconds=0.0,
             )
 
             monitor.prime()
@@ -250,17 +250,15 @@ class CodexSessionTests(unittest.TestCase):
 
             monitor.poll_once()
 
-            self.assertEqual(len(collector.messages), 4)
+            self.assertEqual(len(collector.messages), 3)
             self.assertTrue(any("Live update" in text for _, text in collector.messages))
-            self.assertTrue(any("[fresh-project] Fresh session" in text for _, text in collector.messages))
-            self.assertTrue(any("started" in text.lower() for _, text in collector.messages))
+            self.assertTrue(any("🔵 [fresh-project] Fresh session" in text for _, text in collector.messages))
             completion_text = next(
                 text
                 for _, text in collector.messages
-                if "Fresh session" in text and "completed" in text.lower()
+                if "🟢 [fresh-project] Fresh body" in text
             )
-            self.assertIn("Completed.", completion_text)
-            self.assertNotIn("Fresh body", completion_text)
+            self.assertEqual(completion_text.strip(), "🟢 [fresh-project] Fresh body")
 
     def test_monitor_handles_non_ascii_rollout_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -294,6 +292,7 @@ class CodexSessionTests(unittest.TestCase):
                 target_chat_ids=lambda: [390429375],
                 send_message=collector.send,
                 logger=logging.getLogger("test.codex_sessions"),
+                agent_update_interval_seconds=0.0,
             )
             monitor.prime()
 
@@ -356,6 +355,7 @@ class CodexSessionTests(unittest.TestCase):
                 target_chat_ids=lambda: [123],
                 send_message=collector.send,
                 logger=logging.getLogger("test.codex_sessions.dynamic"),
+                agent_update_interval_seconds=0.0,
             )
 
             monitor.prime()
@@ -365,10 +365,62 @@ class CodexSessionTests(unittest.TestCase):
 
             monitor.poll_once()
 
-            self.assertEqual(len(collector.messages), 3)
-            self.assertIn("[dynamic-project] First update message · update", collector.messages[0][1])
-            self.assertIn("[dynamic-project] Second update message · update", collector.messages[1][1])
-            self.assertIn("[dynamic-project] Final topic summary · update", collector.messages[2][1])
+            self.assertEqual(len(collector.messages), 1)
+            self.assertIn("🔹 [dynamic-project] Final topic summary", collector.messages[0][1])
+
+    def test_monitor_throttles_agent_updates_after_start(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            db_path = root / "state_throttle.sqlite"
+            rollout_path = root / "throttle.jsonl"
+            rollout_path.write_text("", encoding="utf-8")
+
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                CREATE TABLE threads (
+                    id TEXT PRIMARY KEY,
+                    rollout_path TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    cwd TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    git_branch TEXT
+                )
+                """
+            )
+            _write_thread(
+                conn,
+                thread_id="thread-throttle",
+                rollout_path=rollout_path,
+                cwd="/Users/tianhao/Documents/GitHub/throttle-project",
+                title="Throttle session",
+                updated_at=1,
+            )
+            conn.close()
+
+            collector = Collector()
+            monitor = CodexSessionMonitor(
+                state_db_path=db_path,
+                poll_interval_seconds=0.1,
+                include_user_messages=False,
+                target_chat_ids=lambda: [123],
+                send_message=collector.send,
+                logger=logging.getLogger("test.codex_sessions.throttle"),
+                agent_update_interval_seconds=60.0,
+            )
+
+            monitor.prime()
+            _append_jsonl(rollout_path, {"payload": {"type": "task_started"}})
+            _append_jsonl(rollout_path, {"payload": {"type": "agent_message", "message": "First live update"}})
+            _append_jsonl(rollout_path, {"payload": {"type": "agent_message", "message": "Second live update"}})
+            _append_jsonl(rollout_path, {"payload": {"type": "task_complete", "last_agent_message": "Final summary"}})
+
+            monitor.poll_once()
+
+            self.assertEqual(len(collector.messages), 2)
+            self.assertIn("🔵 [throttle-project] Throttle session", collector.messages[0][1])
+            self.assertIn("🟢 [throttle-project] Final summary", collector.messages[1][1])
 
 
 if __name__ == "__main__":

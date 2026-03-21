@@ -44,6 +44,7 @@ class ChatState:
     last_active_at: float
     current_task_id: str | None = None
     active_project_name: str | None = None
+    pinned_project_name: str | None = None
     pending_mode: str | None = None
 
 

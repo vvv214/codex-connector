@@ -17,11 +17,14 @@ from .rendering import (
     render_new_task_picker,
     render_project_sessions,
     render_status,
+    render_task_notification,
     render_task_result,
 )
 from .runner import Runner, RunnerResult
 from .state import StateStore
 from .telegram import TelegramBotClient, TelegramUpdate
+
+FOLLOW_LATEST_CALLBACK = "__latest__"
 
 
 class BridgeService:
@@ -58,6 +61,10 @@ class BridgeService:
             raise RuntimeError("telegram client is required for serve mode")
         if not self.config.telegram_bot_token:
             raise RuntimeError("telegram_bot_token is missing from config")
+        try:
+            self.telegram.set_default_commands()
+        except Exception:
+            self.logger.exception("failed to register Telegram commands")
         monitor = self._ensure_session_monitor()
         if monitor is not None:
             monitor.start()
@@ -128,13 +135,13 @@ class BridgeService:
         if kind in {"new", "continue"}:
             mode = self._mode_for_message(chat_id, message)
             response = self.submit_task(chat_id, argument, mode, message_id=message_id)
-            if response.startswith("Queued "):
+            if response is None:
                 self._set_pending_mode(chat_id, None)
             return response
         if kind == "unknown":
             return "Unknown command. Send /help for usage."
         response = self.submit_task(chat_id, argument, "continue", message_id=message_id)
-        if response.startswith("Queued "):
+        if response is None:
             self._set_pending_mode(chat_id, None)
         return response
 
@@ -153,29 +160,61 @@ class BridgeService:
             project = self.config.project_by_name(project_name)
             if project is None:
                 raise ValueError(f"Unknown project: {project_name}")
-            self._remember_project(chat_id, project)
+            self._remember_project(chat_id, project, pin=None)
             return project
 
         chat = self.store.get_chat(chat_id)
         if chat is not None:
-            active_name = chat.active_project_name or chat.project_name
-            project = self.config.project_by_name(active_name)
+            routed_name = self._routed_project_name(chat)
+            project = self.config.project_by_name(routed_name)
             if project is not None:
                 return project
         project = self.config.default_project()
         if project is None:
             raise RuntimeError("No project is configured")
-        self._remember_project(chat_id, project)
+        self._remember_project(chat_id, project, pin=None)
         return project
 
-    def _remember_project(self, chat_id: int, project: Project) -> None:
+    def _remember_project(self, chat_id: int, project: Project, pin: bool | None) -> None:
+        pinned_project_name: str | None | object
+        if pin is None:
+            pinned_project_name = self.store.get_chat(chat_id).pinned_project_name if self.store.get_chat(chat_id) is not None else None
+        elif pin:
+            pinned_project_name = project.name
+        else:
+            pinned_project_name = None
         self.store.upsert_chat(
             chat_id,
             project_name=project.name,
             repo_path=project.repo_path,
             last_active_at=time.time(),
             active_project_name=project.name,
+            pinned_project_name=pinned_project_name,
         )
+
+    def _routed_project_name(self, chat: ChatState) -> str:
+        pinned_name = (chat.pinned_project_name or "").strip()
+        if pinned_name:
+            return pinned_name
+        latest_name = (chat.project_name or "").strip()
+        if latest_name:
+            return latest_name
+        fallback_name = (chat.active_project_name or "").strip()
+        if fallback_name:
+            return fallback_name
+        return ""
+
+    def _routing_label(self, chat: ChatState | None) -> str:
+        if chat is None:
+            project = self.config.default_project()
+            return f"following latest ({project.name if project is not None else 'n/a'})"
+        if chat.pinned_project_name:
+            latest_name = chat.project_name or chat.pinned_project_name
+            if latest_name == chat.pinned_project_name:
+                return f"pinned to {chat.pinned_project_name}"
+            return f"pinned to {chat.pinned_project_name} (latest is {latest_name})"
+        current = self._routed_project_name(chat) or "n/a"
+        return f"following latest ({current})"
 
     def _set_pending_mode(self, chat_id: int, pending_mode: str | None) -> None:
         if self.store.get_chat(chat_id) is None:
@@ -195,14 +234,33 @@ class BridgeService:
     def switch_project(self, chat_id: int, project_name: str) -> str:
         if not project_name:
             return self.render_project_sessions(chat_id)
+        if project_name == "latest":
+            chat = self.store.get_chat(chat_id)
+            if chat is None:
+                self._resolve_project(chat_id)
+                chat = self.store.get_chat(chat_id)
+            latest_name = (chat.project_name or "") if chat is not None else ""
+            self.store.upsert_chat(
+                chat_id,
+                last_active_at=time.time(),
+                pinned_project_name=None,
+            )
+            suffix = f" Current latest project: {latest_name}." if latest_name else ""
+            return self.render_project_sessions(chat_id, prefix=f"Now following the latest session again.{suffix}")
         project = self.config.project_by_name(project_name)
         if project is None:
             return self.render_project_sessions(chat_id, prefix=f"Unknown project: {project_name}")
-        self._remember_project(chat_id, project)
-        return self.render_project_sessions(chat_id, prefix=f"Active project set to {project.name}")
+        self._remember_project(chat_id, project, pin=True)
+        return self.render_project_sessions(chat_id, prefix=f"Pinned project to {project.name}.")
 
     def prepare_new_task(self, chat_id: int, project_name: str | None = None, prefix: str | None = None) -> str:
-        project = self._resolve_project(chat_id, project_name)
+        if project_name:
+            project = self.config.project_by_name(project_name)
+            if project is None:
+                raise ValueError(f"Unknown project: {project_name}")
+            self._remember_project(chat_id, project, pin=True)
+        else:
+            project = self._resolve_project(chat_id, project_name)
         self._set_pending_mode(chat_id, "new")
         intro = prefix or f"New task mode armed for {project.name}. Send the prompt after choosing a project."
         return render_new_task_picker(
@@ -214,29 +272,24 @@ class BridgeService:
 
     def render_status(self, chat_id: int) -> str:
         chat = self._ensure_chat_state(chat_id)
-        project = self.config.project_by_name(chat.project_name)
+        project = self.config.project_by_name(self._routed_project_name(chat))
         running_task = self.store.running_task_for_chat(chat_id)
         text = render_status(chat, project, running_task)
         if running_task is None:
-            last_task = self.store.last_task_for_project(chat.project_name)
+            project_name = self._routed_project_name(chat)
+            last_task = self.store.last_task_for_project(project_name) if project_name else None
             if last_task is not None:
                 text += f"\nLast task: {last_task.status} ({last_task.mode}) {last_task.task_id}"
         return text
 
     def render_last(self, chat_id: int) -> str:
         chat = self._ensure_chat_state(chat_id)
-        return render_last_task(self.store.last_task_for_project(chat.project_name))
+        return render_last_task(self.store.last_task_for_project(self._routed_project_name(chat)))
 
     def render_project_sessions(self, chat_id: int, prefix: str | None = None) -> str:
         chat = self.store.get_chat(chat_id)
-        active_project = None
-        if chat is not None:
-            active_name = chat.active_project_name or chat.project_name
-            active_project = self.config.project_by_name(active_name)
-        if active_project is None:
-            active_project = self.config.default_project()
         return render_project_sessions(
-            active_project.name if active_project is not None else None,
+            self._routing_label(chat),
             self._recent_session_rows(),
             max_chars=self.config.max_output_chars,
             prefix=prefix,
@@ -288,7 +341,8 @@ class BridgeService:
         if action not in {"project", "new"} or not project_name:
             return
         if action == "project":
-            response = self.switch_project(update.chat_id, project_name)
+            target = "latest" if project_name == FOLLOW_LATEST_CALLBACK else project_name
+            response = self.switch_project(update.chat_id, target)
             inline_keyboard = self._project_keyboard(update.chat_id, action="project")
         else:
             response = self.prepare_new_task(
@@ -316,9 +370,9 @@ class BridgeService:
                     break
         if project is None:
             return
-        self._remember_project(chat_id, project)
+        self._remember_project(chat_id, project, pin=None)
 
-    def submit_task(self, chat_id: int, prompt: str, mode: str, message_id: int | None = None) -> str:
+    def submit_task(self, chat_id: int, prompt: str, mode: str, message_id: int | None = None) -> str | None:
         prompt = prompt.strip()
         if not prompt:
             return f"Usage: /{mode} <prompt>"
@@ -329,7 +383,7 @@ class BridgeService:
         self._validate_project_runtime(project)
         task = self._enqueue_task(chat_id, project, prompt, mode)
         self._executor.submit(self._execute_task, task.task_id, project, prompt, mode, chat_id, message_id, True)
-        return f"Queued {mode} task {task.task_id} for {project.name}"
+        return None
 
     def run_task_sync(self, chat_id: int, prompt: str, mode: str, project_name: str | None = None) -> TaskRun:
         prompt = prompt.strip()
@@ -391,14 +445,15 @@ class BridgeService:
             self.store.update_task(task)
             self._clear_chat_task(chat_id, task_id)
             if notify:
-                self._notify(chat_id, render_task_result(task, self.config.max_output_chars), message_id)
+                self._notify(chat_id, render_task_notification(task, task.summary), message_id)
             self.logger.exception("task failed task_id=%s", task_id)
             return task
 
         self.store.update_task(task)
         self._clear_chat_task(chat_id, task_id)
         if notify:
-            self._notify(chat_id, render_task_result(task, self.config.max_output_chars), message_id)
+            final_output = result.stdout if result.ok else (result.stderr or result.stdout)
+            self._notify(chat_id, render_task_notification(task, final_output), message_id)
         return task
 
     def _task_from_result(self, task: TaskRun, result: RunnerResult) -> TaskRun:
@@ -458,11 +513,16 @@ class BridgeService:
 
     def _project_keyboard(self, chat_id: int, action: str = "project") -> list[list[dict[str, str]]]:
         chat = self.store.get_chat(chat_id)
-        active_name = None if chat is None else (chat.active_project_name or chat.project_name)
+        pinned_name = None if chat is None else chat.pinned_project_name
         keyboard: list[list[dict[str, str]]] = []
+        if action == "project":
+            latest_label = "• Follow latest" if pinned_name is None else "Follow latest"
+            keyboard.append(
+                [{"text": self._truncate_button_label(latest_label), "callback_data": f"project:{FOLLOW_LATEST_CALLBACK}"}]
+            )
         row: list[dict[str, str]] = []
         for project in self.config.projects:
-            label = project.name if project.name != active_name else f"• {project.name}"
+            label = project.name if project.name != pinned_name else f"• {project.name}"
             row.append({"text": self._truncate_button_label(label), "callback_data": f"{action}:{project.name}"})
             if len(row) == 2:
                 keyboard.append(row)

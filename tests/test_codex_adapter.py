@@ -44,7 +44,9 @@ class CodexAdapterTests(unittest.TestCase):
             stderr_tail="",
         )
         rendered = render_task_result(task, max_chars=500)
+        self.assertIn("🟢 alpha", rendered)
         self.assertIn("Project: alpha", rendered)
+        self.assertIn("Summary:", rendered)
         self.assertIn("Completed successfully.", rendered)
         self.assertNotIn("STDOUT", rendered)
 

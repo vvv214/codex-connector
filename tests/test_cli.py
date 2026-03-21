@@ -51,8 +51,13 @@ class CliTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch("codex_connector.cli.BridgeService.serve", autospec=True) as serve_mock:
-                exit_code = main(["serve", "--config", str(config_path)])
+            with patch("codex_connector.cli.SingleInstanceLock.acquire", autospec=True) as acquire_mock:
+                with patch("codex_connector.cli.SingleInstanceLock.release", autospec=True) as release_mock:
+                    with patch("codex_connector.cli.BridgeService.serve", autospec=True) as serve_mock:
+                        exit_code = main(["serve", "--config", str(config_path)])
+
+            acquire_mock.assert_called_once()
+            release_mock.assert_called_once()
 
             self.assertEqual(exit_code, 0)
             serve_mock.assert_called_once()

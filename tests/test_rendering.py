@@ -14,6 +14,7 @@ from codex_connector.rendering import (
     render_help_text,
     render_new_task_picker,
     render_project_sessions,
+    render_task_notification,
     render_task_result,
 )
 
@@ -21,7 +22,7 @@ from codex_connector.rendering import (
 class RenderingTests(unittest.TestCase):
     def test_render_help_text(self) -> None:
         help_text = render_help_text()
-        self.assertIn("/project [name]  list active project and recent sessions, or switch active project", help_text)
+        self.assertIn("/project [name]  list projects, pin one, or use /project latest to follow the newest session", help_text)
         self.assertIn("/new [prompt]", help_text)
         self.assertIn("/continue <prompt>", help_text)
         self.assertIn("/last", help_text)
@@ -30,7 +31,7 @@ class RenderingTests(unittest.TestCase):
 
     def test_render_project_sessions_no_sessions(self) -> None:
         text = render_project_sessions(active_project_name="my-proj", sessions=[])
-        self.assertIn("Active project: my-proj", text)
+        self.assertIn("Routing: my-proj", text)
         self.assertIn("Recent sessions: none", text)
 
     def test_render_project_sessions_with_sessions(self) -> None:
@@ -42,7 +43,7 @@ class RenderingTests(unittest.TestCase):
         ]
         sessions.sort(key=lambda x: x[2], reverse=True) # Sort by timestamp (index 2) descending
         text = render_project_sessions(active_project_name="proj-a", sessions=sessions)
-        self.assertIn("Active project: proj-a", text)
+        self.assertIn("Routing: proj-a", text)
         self.assertIn("Recent sessions:", text)
         self.assertIn("1. proj-a", text)
         self.assertIn("2. proj-b", text)
@@ -54,7 +55,7 @@ class RenderingTests(unittest.TestCase):
     def test_render_project_sessions_with_prefix(self) -> None:
         text = render_project_sessions(active_project_name="my-proj", sessions=[], prefix="Hello there!")
         self.assertIn("Hello there!", text)
-        self.assertIn("Active project: my-proj", text)
+        self.assertIn("Routing: my-proj", text)
 
     def test_render_new_task_picker(self) -> None:
         text = render_new_task_picker(active_project_name="my-proj", sessions=[], prefix="Pick a project.")
@@ -72,7 +73,7 @@ class RenderingTests(unittest.TestCase):
         # Max chars is 4000 by default, line length is ~72 + 20 for timestamp + 4 for index = ~100
         # 4000 / 100 = 40 lines. Plus header lines. Should truncate.
         text = render_project_sessions(active_project_name="my-proj", sessions=sessions, max_chars=500)
-        self.assertIn("Active project: my-proj", text)
+        self.assertIn("Routing: my-proj", text)
         self.assertIn("Recent sessions:", text)
         self.assertIn("... 1", text) # Check for omitted message
         self.assertLess(len(text), 550) # Should be less than max_chars + some buffer
@@ -92,8 +93,29 @@ class RenderingTests(unittest.TestCase):
             stdout_tail="very long stdout tail",
         )
         text = render_task_result(task, max_chars=500)
+        self.assertIn("🟢 proj-a", text)
+        self.assertIn("Summary:", text)
         self.assertIn("Short success summary", text)
         self.assertNotIn("very long stdout tail", text)
+
+    def test_render_task_notification_keeps_full_output(self) -> None:
+        task = TaskRun(
+            task_id="task-2",
+            chat_id=1,
+            project_name="proj-a",
+            prompt="hello",
+            mode="continue",
+            status="done",
+            started_at=1.0,
+            ended_at=2.0,
+            return_code=0,
+            summary="ignored summary",
+        )
+        output = "line 1\nline 2\nline 3"
+
+        text = render_task_notification(task, output)
+
+        self.assertEqual(text, "🟢 [proj-a]\nline 1\nline 2\nline 3")
 
 if __name__ == "__main__":
     unittest.main()

@@ -90,6 +90,18 @@ class TelegramClientTests(unittest.TestCase):
 
         self.assertEqual(bot.requests[0][1]["disable_notification"], "true")
 
+    def test_set_default_commands_posts_bot_command_list(self) -> None:
+        bot = RecordingTelegramBotClient()
+
+        bot.set_default_commands()
+
+        self.assertEqual(len(bot.requests), 1)
+        url, payload = bot.requests[0]
+        self.assertTrue(url.endswith("/setMyCommands"))
+        commands = json.loads(payload["commands"])
+        self.assertEqual(commands[0]["command"], "project")
+        self.assertEqual(commands[-1]["command"], "help")
+
 
 if __name__ == "__main__":
     unittest.main()
