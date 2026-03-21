@@ -1,8 +1,8 @@
 # codex-connector
 
 <p align="center">
-  <strong>Bridge your local coding agent to your phone.</strong><br />
-  mobile control, project switching, session mirroring, phone friendly.
+  <strong>Fill Codex's mobile gap from your phone.</strong><br />
+  remote control, multi-session routing, session mirroring, local-first.
 </p>
 
 <p align="center">
@@ -11,89 +11,67 @@
   <img alt="Local-first" src="https://img.shields.io/badge/runtime-local--first-0F766E" />
 </p>
 
-`codex-connector` is a small bridge for the common setup many of us already have: strong local agent tools on the machine (e.g., codex), but no clean way to reach them from a phone. 
+`codex-connector` is a lightweight remote bridge for local coding agents.
 
-`Telegram` is used as a thin remote control for the local agent setup you already trust on your machine.
+It exists because Codex is already useful on the desktop, but may not have native mobile or remote control in the shape you want yet. This project fills that gap today, and adds one workflow that many native remote flows still do not handle well: routing across multiple local sessions and projects from one phone interface.
 
-
-
-
-## Why
-
-Your laptop already knows how to run the real work. The missing piece is a simple mobile control plane. This project adds a thin Telegram layer on top of the local workflow you already have:
-
-- Continue the latest Codex session by sending plain text from your phone.
-- Start a new task in a specific repo without opening a terminal.
-- See compact progress updates while Codex is running locally.
-- Mirror desktop Codex sessions back into Telegram.
-- Keep project context aligned with the latest active session.
+Telegram is the current transport. The core idea is not "build a Telegram bot." The core idea is "add a thin remote-control layer to the local agent workflow you already trust on your own machine."
 
 ## Design Goals
 
+- Fill today's missing mobile / remote gap for Codex without replacing the local workflow.
+- Make multiple local sessions manageable from one phone interface.
 - Keep execution local. Repos, secrets, and toolchains stay on your machine.
 - Optimize for phone use. Updates should be short, readable, and actionable.
 - Stay small. This is a thin control plane over a local agent CLI, not a new agent platform.
-- Prefer opinionated defaults over transport abstraction and plugin sprawl.
+- Treat Telegram as the current transport, not the product identity.
 
-## Core Idea
+## Why This Exists
 
-There are only two moving parts in the core:
+Your laptop already knows how to run the real work. The missing piece is a simple remote control plane. This project adds that missing layer on top of the local workflow you already have:
 
-- `Telegram transport`: receive commands, send short updates, render buttons.
-- `Runner`: turn `new` or `continue` into a local CLI invocation inside a repo.
+- Continue the latest active session by sending plain text from your phone.
+- Start a new task in a specific repo without opening a terminal.
+- Mirror local sessions back into Telegram with short, readable updates.
+- Route messages across multiple projects and sessions from one chat.
+- Keep project context aligned with the latest active session, unless you explicitly pin one.
 
-Today the built-in runner is `codex`. The runner boundary is intentionally small so another local CLI can be added without rewriting the Telegram flow.
-
-
-## Why A Thin Bridge
-
-If you already use `codex` locally, a lot of the hard part is already solved. Codex already has session state, memory, repo context, and the local toolchain. For this use case, the problem is not "build another assistant stack." The problem is just "reach the setup you already trust from your phone."
-
-```text
-What already exists on your machine:
-
-  codex/claude code/gemini cli...
-  - memory / session state
-  - repo context
-  - local tools and secrets
-
-Ways to reach it from a phone:
-
-  build a website
-    cost: frontend, auth, deployment, maintenance
-
-  add OpenClaw
-    cost: solves more than this repo needs
-
-  add codex-connector
-    value: thin bridge, local execution stays local
-```
-
-This repo takes the last path. In other words:
-
-- If Codex already gives you the memory and execution model you want, and you only need phone access, this repo is the right shape.
-- If you want vendor-managed cloud execution, use those first-party products directly.
-- If you want a full remote product surface, build a website.
-- If you want an always-on multi-channel assistant that does much more than bridge into Codex, OpenClaw is closer.
-- If you want to train or serve your own model stack, nanochat is solving a different problem entirely.
+The point is not to build another hosted assistant stack. The point is to reach your existing local setup from your phone, while keeping execution and context on your own machine.
 
 ## How It Works
 
-| Capability | What you get |
+| Capability | What it means in practice |
 | --- | --- |
-| Project switching | `/project` shows recent sessions, lets you pin a repo, and offers a `Follow latest` escape hatch |
+| Project routing | `/project` shows recent sessions, lets you pin a repo, and offers a `Follow latest` escape hatch |
+| Multi-session control | One Telegram chat can follow multiple local sessions across different repos |
 | New-task picker | `/new` without a prompt opens a project picker and arms the next plain-text message as a fresh session |
 | Session continuity | Plain text follows the latest active project by default, or stays pinned to the project you selected |
 | Desktop mirroring | Local Codex sessions can push `started`, `update`, and `completed` events into Telegram |
-| Mobile-friendly output | Intermediate updates are short; long completions are split into multiple Telegram messages |
-| Local-first runtime | Repos, tools, and Codex execution stay on your machine |
+| Mobile-friendly output | Intermediate updates stay short; long completions are split into multiple Telegram messages |
+| Local-first runtime | Repos, tools, secrets, and execution stay on your machine |
+
+There are only a few moving parts in the core:
+
+- `Telegram transport`: receive commands, send short updates, render buttons.
+- `Runner`: turn `new` or `continue` into a local CLI invocation inside a repo.
+- `Session monitor`: watch local Codex sessions and mirror compact state back to Telegram.
+
+Today the built-in runner is `codex`. The runner boundary is intentionally small so another local CLI can be added without rewriting the routing and Telegram flow.
 
 ## Quick Start
 
-1. Install the package from source.
+1. Install with a Python 3.11+ environment.
 
    ```bash
-   python3 -m pip install -e .
+   python3 -m venv .venv
+   source .venv/bin/activate
+   python -m pip install -e .
+   ```
+
+   If you prefer not to use a virtualenv, a user install also works on macOS Homebrew Python:
+
+   ```bash
+   python3 -m pip install --user --break-system-packages -e .
    ```
 
 2. Create a Telegram bot with `@BotFather`, then send it `hi` once from your phone.
@@ -129,7 +107,7 @@ This repo takes the last path. In other words:
 
    Start with `/status` or `/project`. Plain text is treated as a real prompt, so avoid sending casual messages like `hi` after the bridge is running unless you want Codex to act on them.
 
-## Telegram Flow
+## Routing And Notifications
 
 - `/project` shows recent sessions, inline project buttons, and a `Follow latest` button.
 - Selecting a project pins routing to that repo until you switch again.
@@ -172,6 +150,17 @@ Behavior details:
 - If you pinned a project with `/project <name>`, mirrored sessions in other repos do not override that choice.
 - On macOS, mirrored session notifications can switch to `silent` or `suppress` while the desktop is active.
 
+## Where It Fits
+
+This repo is most useful when all of these are true:
+
+- You already trust a local Codex workflow on your machine.
+- You want phone access now, before Codex has the exact native remote flow you want.
+- You care about more than one local session or project.
+- You want a thin, hackable bridge instead of a hosted product surface.
+
+If Codex eventually ships first-party mobile or remote support, this repo still has a role as an open, local, multi-session control layer. Telegram is just the current UI for that layer.
+
 ## Development
 
 Run tests:
@@ -194,6 +183,8 @@ codex-connector status --config ./config.json --chat-id 390429375
 codex-connector last --config ./config.json --chat-id 390429375
 ```
 
+If you installed with a virtualenv, activate it first. If you installed with `--user`, make sure your user script directory is on `PATH`.
+
 ## Security Notes
 
 - Restrict `allowed_chat_ids` to chats you control.
@@ -208,11 +199,13 @@ codex-connector last --config ./config.json --chat-id 390429375
 - Telegram is a compact control layer, not a rich IDE.
 - Outputs are optimized for phones, not diffs or large logs.
 - The bridge assumes your local `codex` CLI and project environment are already configured correctly.
+- The default transport is Telegram today; other transports should not complicate the default path.
+- The default runner is Codex today; support for every CLI is intentionally not bundled into the core.
 
 ## Contributing
 
-- Keep changes small, local-first, and Telegram-first; avoid turning this into a hosted service or generic chat framework.
+- Keep changes small, local-first, and focused on the remote-control layer; avoid turning this into a hosted service or generic chat framework.
 - Add or update `unittest` coverage for command parsing, state persistence, and Telegram callbacks when behavior changes.
-- Prefer mobile-oriented UX: short intermediate updates, explicit project context, and deterministic callback flows.
+- Prefer mobile-oriented UX: short intermediate updates, explicit project context, deterministic callback flows, and clear multi-session routing.
 - When adding config surface area, update both [config.example.json](config.example.json) and this README in the same change.
-- If you add another chat transport or runner, keep the default Telegram + Codex path simple.
+- If you add another chat transport or runner, keep the default Codex path simple and avoid making the core feel like a plugin marketplace.
