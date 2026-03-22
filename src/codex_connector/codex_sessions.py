@@ -475,13 +475,14 @@ class CodexSessionMonitor:
                 if self._on_notification is not None:
                     self._on_notification(chat_id, notification)
                 self._send_message(chat_id, text)
-                self._remember_delivery(chat_id, notification)
             except Exception:
                 self._logger.exception(
                     "failed to send session notification chat_id=%s thread_id=%s",
                     chat_id,
                     notification.thread_id,
                 )
+            finally:
+                self._remember_delivery(chat_id, notification)
 
     def _notification_signature(self, notification: SessionNotification) -> tuple[str, str, str]:
         return (

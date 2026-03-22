@@ -28,6 +28,15 @@ class Collector:
         self.messages.append((chat_id, text))
 
 
+class FailingCollector:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def send(self, chat_id: int, text: str) -> None:
+        self.calls += 1
+        raise RuntimeError("transient send failure")
+
+
 def _write_thread(
     conn: sqlite3.Connection,
     *,
@@ -475,6 +484,56 @@ class CodexSessionTests(unittest.TestCase):
             self.assertEqual(len(collector.messages), 2)
             self.assertIn("🔵 [replay-project] Replay session", collector.messages[0][1])
             self.assertIn("🟢 [replay-project] Done once", collector.messages[1][1])
+
+    def test_monitor_does_not_retry_identical_replay_after_send_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            db_path = root / "state_send_error.sqlite"
+            rollout_path = root / "send_error.jsonl"
+            rollout_path.write_text("", encoding="utf-8")
+
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                CREATE TABLE threads (
+                    id TEXT PRIMARY KEY,
+                    rollout_path TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    cwd TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    git_branch TEXT
+                )
+                """
+            )
+            _write_thread(
+                conn,
+                thread_id="thread-send-error",
+                rollout_path=rollout_path,
+                cwd="/Users/tianhao/Documents/GitHub/replay-project",
+                title="Replay session",
+                updated_at=1,
+            )
+            conn.close()
+
+            collector = FailingCollector()
+            monitor = CodexSessionMonitor(
+                state_db_path=db_path,
+                poll_interval_seconds=0.1,
+                include_user_messages=False,
+                target_chat_ids=lambda: [123],
+                send_message=collector.send,
+                logger=logging.getLogger("test.codex_sessions.send_error"),
+                agent_update_interval_seconds=0.0,
+            )
+
+            monitor.prime()
+            _append_jsonl(rollout_path, {"payload": {"type": "task_complete", "last_agent_message": "Done once"}})
+            _append_jsonl(rollout_path, {"payload": {"type": "task_complete", "last_agent_message": "Done once"}})
+
+            monitor.poll_once()
+
+            self.assertEqual(collector.calls, 1)
 
 
 if __name__ == "__main__":
