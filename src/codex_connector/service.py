@@ -5,6 +5,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 
 from .commands import ParsedMessage, parse_message
 from .config import AppConfig
@@ -45,6 +46,9 @@ class BridgeService:
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="codex-connector")
         self._session_monitor: CodexSessionMonitor | None = None
         self._desktop_presence = desktop_presence
+        self._last_poll_error_message: str | None = None
+        self._last_poll_error_at: float = 0.0
+        self._poll_error_repeat_count = 0
         if self._desktop_presence is None and self.config.codex_sessions.desktop_active_mode in {"silent", "suppress"}:
             self._desktop_presence = create_desktop_presence(
                 idle_threshold_seconds=self.config.codex_sessions.desktop_idle_threshold_seconds,
@@ -74,10 +78,11 @@ class BridgeService:
             while True:
                 try:
                     updates = self.telegram.get_updates(offset=offset, timeout=self.config.poll_timeout_seconds)
-                except Exception:
-                    self.logger.exception("failed to fetch Telegram updates")
+                except Exception as exc:
+                    self._log_poll_error(exc)
                     time.sleep(self.config.poll_sleep_seconds)
                     continue
+                self._clear_poll_error_state()
                 for update in updates:
                     offset = max(offset or 0, update.update_id + 1)
                     try:
@@ -88,6 +93,59 @@ class BridgeService:
         finally:
             if monitor is not None:
                 monitor.close()
+
+    def _log_poll_error(self, exc: Exception) -> None:
+        if not self._is_transient_poll_error(exc):
+            self.logger.exception("failed to fetch Telegram updates")
+            return
+
+        message = self._format_poll_error(exc)
+        now = time.time()
+        if message == self._last_poll_error_message and now - self._last_poll_error_at < 60:
+            self._poll_error_repeat_count += 1
+            return
+
+        if message == self._last_poll_error_message and self._poll_error_repeat_count > 1:
+            self.logger.warning(
+                "Telegram polling still failing (%s repeats suppressed): %s",
+                self._poll_error_repeat_count - 1,
+                message,
+            )
+        else:
+            self.logger.warning("Telegram polling error: %s", message)
+        self._last_poll_error_message = message
+        self._last_poll_error_at = now
+        self._poll_error_repeat_count = 1
+
+    def _clear_poll_error_state(self) -> None:
+        if self._last_poll_error_message is None:
+            return
+        if self._poll_error_repeat_count > 1:
+            self.logger.info(
+                "Telegram polling recovered after %s suppressed repeats",
+                self._poll_error_repeat_count - 1,
+            )
+        self._last_poll_error_message = None
+        self._last_poll_error_at = 0.0
+        self._poll_error_repeat_count = 0
+
+    def _is_transient_poll_error(self, exc: Exception) -> bool:
+        if isinstance(exc, TimeoutError):
+            return True
+        if isinstance(exc, HTTPError):
+            return exc.code in {408, 409, 425, 429} or exc.code >= 500
+        return isinstance(exc, URLError)
+
+    def _format_poll_error(self, exc: Exception) -> str:
+        if isinstance(exc, HTTPError):
+            return f"HTTP {exc.code}: {exc.reason}"
+        if isinstance(exc, URLError):
+            reason = exc.reason
+            if isinstance(reason, BaseException):
+                return f"{type(reason).__name__}: {reason}"
+            if reason:
+                return str(reason)
+        return f"{type(exc).__name__}: {exc}"
 
     def handle_telegram_update(self, update: TelegramUpdate) -> None:
         if self.config.allowed_chat_ids and update.chat_id not in self.config.allowed_chat_ids:

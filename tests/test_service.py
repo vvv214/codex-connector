@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import tempfile
 import time
 import unittest
 import sys
 from pathlib import Path
+from urllib.error import URLError
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
@@ -74,6 +76,14 @@ class ServiceTests(unittest.TestCase):
 
         def is_user_active(self) -> bool:
             return self.active
+
+    class RecordingHandler(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.records: list[logging.LogRecord] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.records.append(record)
 
     def _write_thread(
         self,
@@ -258,6 +268,40 @@ class ServiceTests(unittest.TestCase):
             service._send_session_message(42, "mirror update")
 
             self.assertEqual(telegram.sent, [])
+
+    def test_transient_poll_errors_are_deduplicated_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "repo").mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps({"projects": [{"name": "alpha", "repo_path": "./repo"}]}),
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            store = StateStore(root / "state.json")
+            store.load()
+            logger = logging.getLogger("codex_connector_test_poll_errors")
+            logger.setLevel(logging.INFO)
+            logger.handlers = []
+            logger.propagate = False
+            handler = self.RecordingHandler()
+            logger.addHandler(handler)
+            service = BridgeService(config=config, store=store, adapter=FakeAdapter(), logger=logger)
+
+            error = URLError(TimeoutError("The read operation timed out"))
+            service._log_poll_error(error)
+            service._log_poll_error(error)
+            service._clear_poll_error_state()
+
+            warning_records = [record for record in handler.records if record.levelno == logging.WARNING]
+            info_records = [record for record in handler.records if record.levelno == logging.INFO]
+
+            self.assertEqual(len(warning_records), 1)
+            self.assertIn("Telegram polling error", warning_records[0].getMessage())
+            self.assertNotIn("Traceback", warning_records[0].getMessage())
+            self.assertEqual(len(info_records), 1)
+            self.assertIn("recovered", info_records[0].getMessage())
 
     def test_project_command_lists_recent_sessions_newest_first(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
