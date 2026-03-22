@@ -422,6 +422,60 @@ class CodexSessionTests(unittest.TestCase):
             self.assertIn("🔵 [throttle-project] Throttle session", collector.messages[0][1])
             self.assertIn("🟢 [throttle-project] Final summary", collector.messages[1][1])
 
+    def test_monitor_deduplicates_replayed_notifications(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            db_path = root / "state_replay.sqlite"
+            rollout_path = root / "replay.jsonl"
+            rollout_path.write_text("", encoding="utf-8")
+
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                CREATE TABLE threads (
+                    id TEXT PRIMARY KEY,
+                    rollout_path TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    cwd TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    git_branch TEXT
+                )
+                """
+            )
+            _write_thread(
+                conn,
+                thread_id="thread-replay",
+                rollout_path=rollout_path,
+                cwd="/Users/tianhao/Documents/GitHub/replay-project",
+                title="Replay session",
+                updated_at=1,
+            )
+            conn.close()
+
+            collector = Collector()
+            monitor = CodexSessionMonitor(
+                state_db_path=db_path,
+                poll_interval_seconds=0.1,
+                include_user_messages=False,
+                target_chat_ids=lambda: [123],
+                send_message=collector.send,
+                logger=logging.getLogger("test.codex_sessions.replay"),
+                agent_update_interval_seconds=0.0,
+            )
+
+            monitor.prime()
+            _append_jsonl(rollout_path, {"payload": {"type": "task_started"}})
+            _append_jsonl(rollout_path, {"payload": {"type": "task_complete", "last_agent_message": "Done once"}})
+            _append_jsonl(rollout_path, {"payload": {"type": "task_started"}})
+            _append_jsonl(rollout_path, {"payload": {"type": "task_complete", "last_agent_message": "Done once"}})
+
+            monitor.poll_once()
+
+            self.assertEqual(len(collector.messages), 2)
+            self.assertIn("🔵 [replay-project] Replay session", collector.messages[0][1])
+            self.assertIn("🟢 [replay-project] Done once", collector.messages[1][1])
+
 
 if __name__ == "__main__":
     unittest.main()

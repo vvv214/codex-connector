@@ -30,6 +30,7 @@ config.json
 state.json
 *.state.json
 codex-connector.log
+codex-connector.log.*
 *.log
 .codex-connector-serve.lock
 

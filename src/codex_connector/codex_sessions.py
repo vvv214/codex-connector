@@ -302,6 +302,7 @@ class CodexSessionMonitor:
         self._offsets: dict[str, int | None] = {}
         self._pending_agent_updates: dict[str, SessionNotification] = {}
         self._last_agent_notification_at: dict[str, float] = {}
+        self._recent_delivery_signatures: dict[tuple[int, str], list[tuple[str, str, str]]] = {}
 
     def start(self) -> None:
         with self._lock:
@@ -468,16 +469,41 @@ class CodexSessionMonitor:
         text = format_notification(notification)
         chat_ids = list(dict.fromkeys(self._target_chat_ids()))
         for chat_id in chat_ids:
+            if self._was_recently_delivered(chat_id, notification):
+                continue
             try:
                 if self._on_notification is not None:
                     self._on_notification(chat_id, notification)
                 self._send_message(chat_id, text)
+                self._remember_delivery(chat_id, notification)
             except Exception:
                 self._logger.exception(
                     "failed to send session notification chat_id=%s thread_id=%s",
                     chat_id,
                     notification.thread_id,
                 )
+
+    def _notification_signature(self, notification: SessionNotification) -> tuple[str, str, str]:
+        return (
+            notification.event_type,
+            _compact(notification.title),
+            _compact(notification.body),
+        )
+
+    def _was_recently_delivered(self, chat_id: int, notification: SessionNotification) -> bool:
+        key = (chat_id, notification.thread_id)
+        signature = self._notification_signature(notification)
+        return signature in self._recent_delivery_signatures.get(key, [])
+
+    def _remember_delivery(self, chat_id: int, notification: SessionNotification) -> None:
+        key = (chat_id, notification.thread_id)
+        signature = self._notification_signature(notification)
+        history = self._recent_delivery_signatures.setdefault(key, [])
+        if signature in history:
+            return
+        history.append(signature)
+        if len(history) > 32:
+            del history[0]
 
     def _file_size(self, path: Path) -> int | None:
         try:
