@@ -92,11 +92,15 @@ class CliTests(unittest.TestCase):
                     )
 
             self.assertEqual(exit_code, 0)
-            self.assertTrue(explicit_state.exists())
-            state_payload = json.loads(explicit_state.read_text(encoding="utf-8"))
-            self.assertIn("99", state_payload["chats"])
-            self.assertEqual(state_payload["chats"]["99"]["project_name"], "alpha")
-            self.assertEqual(state_payload["tasks"][0]["chat_id"], 99)
+            store = StateStore(explicit_state)
+            store.load()
+            self.assertTrue(store.db_path.exists())
+            chat = store.get_chat(99)
+            self.assertIsNotNone(chat)
+            assert chat is not None
+            self.assertEqual(chat.project_name, "alpha")
+            task = store.get_recent_sessions(chat_id=99, limit=1)[0]
+            self.assertEqual(task.chat_id, 99)
             self.assertIn("finished", buffer.getvalue())
 
     def test_status_reads_explicit_state_after_subcommand(self) -> None:

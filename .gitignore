@@ -28,7 +28,10 @@ dist/
 # Local runtime files
 config.json
 state.json
+state.sqlite3
+state.runtime.sqlite3
 *.state.json
+*.sqlite3
 codex-connector.log
 codex-connector.log.*
 *.log

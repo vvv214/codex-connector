@@ -46,6 +46,86 @@ class StateStoreTests(unittest.TestCase):
             self.assertEqual(task.task_id, "task-1")
             self.assertEqual(task.summary, "ok")
 
+    def test_finds_task_by_request_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "state.json"
+            store = StateStore(path)
+            store.load()
+            store.add_task(
+                TaskRun(
+                    task_id="task-1",
+                    chat_id=1,
+                    project_name="alpha",
+                    prompt="hello",
+                    mode="continue",
+                    status="done",
+                    started_at=2.0,
+                    request_key="telegram:update:123",
+                )
+            )
+
+            restored = StateStore(path)
+            restored.load()
+
+            task = restored.find_task_by_request_key("telegram:update:123")
+            self.assertIsNotNone(task)
+            self.assertEqual(task.task_id, "task-1")
+
+    def test_load_migrates_legacy_json_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "state.json"
+            path.write_text(
+                """
+                {
+                  "chats": {
+                    "5": {
+                      "chat_id": 5,
+                      "project_name": "alpha",
+                      "repo_path": "/repo-a",
+                      "last_active_at": 1.25,
+                      "current_task_id": "task-5",
+                      "active_project_name": "alpha",
+                      "pinned_project_name": null,
+                      "pending_mode": "new"
+                    }
+                  },
+                  "tasks": [
+                    {
+                      "task_id": "task-5",
+                      "chat_id": 5,
+                      "project_name": "alpha",
+                      "prompt": "hello",
+                      "mode": "continue",
+                      "status": "done",
+                      "started_at": 2.0,
+                      "ended_at": 3.0,
+                      "return_code": 0,
+                      "summary": "ok",
+                      "stdout_tail": "stdout",
+                      "stderr_tail": "",
+                      "error": null,
+                      "request_key": "telegram:update:5"
+                    }
+                  ]
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            store = StateStore(path)
+            store.load()
+
+            self.assertTrue(store.db_path.exists())
+            chat = store.get_chat(5)
+            self.assertIsNotNone(chat)
+            assert chat is not None
+            self.assertEqual(chat.pending_mode, "new")
+            task = store.get_task("task-5")
+            self.assertIsNotNone(task)
+            assert task is not None
+            self.assertEqual(task.summary, "ok")
+            self.assertEqual(task.request_key, "telegram:update:5")
+
     def test_upsert_chat_preserves_current_task_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "state.json"

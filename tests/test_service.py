@@ -20,6 +20,7 @@ from codex_connector.models import ChatState, TaskRun
 from codex_connector.service import BridgeService, configure_logging
 from codex_connector.state import StateStore
 from codex_connector.telegram import TelegramUpdate
+from codex_connector.telegram_runtime import TelegramRuntimeStore
 
 
 class FakeAdapter:
@@ -67,6 +68,31 @@ class FakeTelegram:
 
     def set_default_commands(self) -> None:
         self.commands_registered = True
+
+
+class FlakyTelegram(FakeTelegram):
+    def __init__(self, failures: int) -> None:
+        super().__init__()
+        self.failures = failures
+
+    def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        reply_to_message_id: int | None = None,
+        inline_keyboard: list[list[dict[str, str]]] | None = None,
+        disable_notification: bool = False,
+    ) -> None:
+        if self.failures > 0:
+            self.failures -= 1
+            raise URLError("temporary network issue")
+        super().send_message(
+            chat_id,
+            text,
+            reply_to_message_id=reply_to_message_id,
+            inline_keyboard=inline_keyboard,
+            disable_notification=disable_notification,
+        )
 
 
 class ServiceTests(unittest.TestCase):
@@ -822,6 +848,131 @@ class ServiceTests(unittest.TestCase):
             self.assertIn("Now following the latest session again.", str(text))
             self.assertIsNone(store.get_chat(7).pinned_project_name)
             self.assertEqual(task.project_name, "beta")
+
+    def test_submit_task_deduplicates_request_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "repo").mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                """
+                {
+                  "projects": [{"name": "alpha", "repo_path": "./repo"}]
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            store = StateStore(root / "state.json")
+            store.load()
+            service = BridgeService(config=config, store=store, adapter=FakeAdapter())
+
+            first = service.submit_task(
+                7,
+                "run once",
+                "continue",
+                request_key="telegram:update:100",
+            )
+            second = service.submit_task(
+                7,
+                "run once",
+                "continue",
+                request_key="telegram:update:100",
+            )
+
+            self.assertIsNone(first)
+            self.assertIsNone(second)
+            for _ in range(50):
+                tasks = store.get_recent_sessions(chat_id=7, limit=10)
+                if len(tasks) == 1 and tasks[0].status == "done" and store.get_chat(7).current_task_id is None:
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("timed out waiting for deduplicated task to finish")
+
+            self.assertEqual(len(tasks), 1)
+            self.assertEqual(tasks[0].request_key, "telegram:update:100")
+            service.close()
+
+    def test_sender_uses_outbox_and_deduplicates_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "repo").mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                """
+                {
+                  "projects": [{"name": "alpha", "repo_path": "./repo"}]
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            store = StateStore(root / "state.json")
+            store.load()
+            telegram = FakeTelegram()
+            runtime_store = TelegramRuntimeStore(root / "telegram.runtime.sqlite3")
+            service = BridgeService(
+                config=config,
+                store=store,
+                adapter=FakeAdapter(),
+                telegram=telegram,
+                runtime_store=runtime_store,
+            )
+
+            service._start_sender_loop()
+            try:
+                service._send_message(42, "hello", dedupe_key="reply:42")
+                service._send_message(42, "hello", dedupe_key="reply:42")
+                deadline = time.time() + 3.0
+                while time.time() < deadline and len(telegram.sent) < 1:
+                    time.sleep(0.05)
+            finally:
+                service.close()
+
+            self.assertEqual(len(telegram.sent), 1)
+            self.assertEqual(runtime_store.pending_message_count(), 0)
+
+    def test_sender_retries_transient_send_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "repo").mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                """
+                {
+                  "projects": [{"name": "alpha", "repo_path": "./repo"}]
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            store = StateStore(root / "state.json")
+            store.load()
+            telegram = FlakyTelegram(failures=1)
+            runtime_store = TelegramRuntimeStore(root / "telegram.runtime.sqlite3")
+            service = BridgeService(
+                config=config,
+                store=store,
+                adapter=FakeAdapter(),
+                telegram=telegram,
+                runtime_store=runtime_store,
+            )
+            service._retry_delay_seconds = lambda attempts: 0.0  # type: ignore[method-assign]
+
+            outbox_id = runtime_store.enqueue_message(chat_id=42, text="retry me")
+            message = runtime_store.get_due_messages(limit=1)[0]
+            service._deliver_outbox_message(message)
+            self.assertEqual(len(telegram.sent), 0)
+
+            message = runtime_store.get_due_messages(limit=1)[0]
+            self.assertEqual(message.id, outbox_id)
+            self.assertEqual(message.attempts, 1)
+
+            service._deliver_outbox_message(message)
+
+            self.assertEqual(len(telegram.sent), 1)
+            self.assertEqual(runtime_store.pending_message_count(), 0)
 
     def test_configure_logging_creates_parent_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

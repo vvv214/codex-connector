@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import logging
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -24,6 +26,7 @@ from .rendering import (
 from .runner import Runner, RunnerResult
 from .state import StateStore
 from .telegram import TelegramBotClient, TelegramUpdate
+from .telegram_runtime import OutboxMessage, TelegramRuntimeStore
 
 FOLLOW_LATEST_CALLBACK = "__latest__"
 
@@ -37,6 +40,7 @@ class BridgeService:
         telegram: TelegramBotClient | None = None,
         logger: logging.Logger | None = None,
         desktop_presence: DesktopPresence | None = None,
+        runtime_store: TelegramRuntimeStore | None = None,
     ):
         self.config = config
         self.store = store
@@ -46,6 +50,9 @@ class BridgeService:
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="codex-connector")
         self._session_monitor: CodexSessionMonitor | None = None
         self._desktop_presence = desktop_presence
+        self._runtime_store = runtime_store or TelegramRuntimeStore(self._runtime_store_path(config.state_file))
+        self._sender_stop_event = threading.Event()
+        self._sender_thread: threading.Thread | None = None
         self._last_poll_error_message: str | None = None
         self._last_poll_error_at: float = 0.0
         self._poll_error_repeat_count = 0
@@ -58,7 +65,13 @@ class BridgeService:
     def close(self) -> None:
         if self._session_monitor is not None:
             self._session_monitor.close()
+        self._stop_sender_loop()
         self._executor.shutdown(wait=False, cancel_futures=False)
+
+    @staticmethod
+    def _runtime_store_path(state_file: str | Path) -> Path:
+        state_path = Path(state_file).expanduser().resolve()
+        return state_path.parent / f"{state_path.stem}.runtime.sqlite3"
 
     def serve(self) -> None:
         if self.telegram is None:
@@ -72,7 +85,8 @@ class BridgeService:
         monitor = self._ensure_session_monitor()
         if monitor is not None:
             monitor.start()
-        offset: int | None = None
+        self._start_sender_loop()
+        offset = self._runtime_store.get_next_poll_offset()
         self.logger.info("starting Telegram polling")
         try:
             while True:
@@ -84,15 +98,105 @@ class BridgeService:
                     continue
                 self._clear_poll_error_state()
                 for update in updates:
-                    offset = max(offset or 0, update.update_id + 1)
+                    if self._runtime_store.is_update_processed(update.update_id):
+                        offset = max(offset or 0, update.update_id + 1)
+                        self._runtime_store.set_next_poll_offset(offset)
+                        continue
                     try:
                         self.handle_telegram_update(update)
+                        self._runtime_store.mark_update_processed(update.update_id)
+                        offset = max(offset or 0, update.update_id + 1)
+                        self._runtime_store.set_next_poll_offset(offset)
                     except Exception as exc:
                         self.logger.exception("failed to process Telegram update update_id=%s", update.update_id)
-                        self._notify(update.chat_id, f"Error: {exc}", update.message_id)
+                        self._notify(
+                            update.chat_id,
+                            f"Error: {exc}",
+                            update.message_id,
+                            dedupe_key=f"telegram:error:{update.update_id}",
+                        )
         finally:
             if monitor is not None:
                 monitor.close()
+            self._stop_sender_loop()
+
+    def _start_sender_loop(self) -> None:
+        if self.telegram is None:
+            return
+        thread = self._sender_thread
+        if thread is not None and thread.is_alive():
+            return
+        self._sender_stop_event.clear()
+        self._sender_thread = threading.Thread(
+            target=self._sender_loop,
+            name="codex-connector-sender",
+            daemon=True,
+        )
+        self._sender_thread.start()
+
+    def _stop_sender_loop(self) -> None:
+        self._sender_stop_event.set()
+        thread = self._sender_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=5.0)
+        self._sender_thread = None
+
+    def _sender_loop(self) -> None:
+        while not self._sender_stop_event.wait(0.5):
+            try:
+                messages = self._runtime_store.get_due_messages(limit=20)
+                if not messages:
+                    continue
+                for message in messages:
+                    if self._sender_stop_event.is_set():
+                        return
+                    self._deliver_outbox_message(message)
+            except Exception:
+                self.logger.exception("telegram sender loop failed")
+                time.sleep(1.0)
+
+    def _deliver_outbox_message(self, message: OutboxMessage) -> None:
+        if self.telegram is None:
+            return
+        try:
+            self.telegram.send_message(
+                message.chat_id,
+                message.text,
+                reply_to_message_id=message.reply_to_message_id,
+                inline_keyboard=message.inline_keyboard,
+                disable_notification=message.disable_notification,
+            )
+        except Exception as exc:
+            if self._is_transient_send_error(exc):
+                delay = self._retry_delay_seconds(message.attempts)
+                self._runtime_store.mark_message_retry(
+                    message.id,
+                    error=self._format_poll_error(exc),
+                    delay_seconds=delay,
+                )
+                self.logger.warning(
+                    "telegram send retry id=%s in %.1fs: %s",
+                    message.id,
+                    delay,
+                    self._format_poll_error(exc),
+                )
+                return
+            self._runtime_store.mark_message_failed(
+                message.id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            self.logger.exception("telegram send failed permanently outbox_id=%s", message.id)
+            return
+        self._runtime_store.mark_message_sent(message.id)
+
+    def _is_transient_send_error(self, exc: Exception) -> bool:
+        if self._is_transient_poll_error(exc):
+            return True
+        return False
+
+    def _retry_delay_seconds(self, attempts: int) -> float:
+        exponent = max(0, attempts)
+        return min(60.0, 2.0 * (2**exponent))
 
     def _log_poll_error(self, exc: Exception) -> None:
         if not self._is_transient_poll_error(exc):
@@ -156,25 +260,38 @@ class BridgeService:
             return
 
         message = parse_message(update.text)
-        response = self._handle_parsed_message(update.chat_id, message, update.message_id)
+        response = self._handle_parsed_message(
+            update.chat_id,
+            message,
+            update.message_id,
+            request_key=f"telegram:update:{update.update_id}",
+        )
         if response and self.telegram is not None:
             inline_keyboard = self._keyboard_for_message(update.chat_id, message)
-            self.telegram.send_message(
+            self._send_message(
                 update.chat_id,
                 response,
                 reply_to_message_id=update.message_id,
                 inline_keyboard=inline_keyboard,
+                dedupe_key=f"telegram:reply:{update.update_id}",
             )
 
-    def handle_message(self, chat_id: int, text: str, message_id: int | None = None) -> str | None:
+    def handle_message(
+        self,
+        chat_id: int,
+        text: str,
+        message_id: int | None = None,
+        request_key: str | None = None,
+    ) -> str | None:
         message = parse_message(text)
-        return self._handle_parsed_message(chat_id, message, message_id)
+        return self._handle_parsed_message(chat_id, message, message_id, request_key=request_key)
 
     def _handle_parsed_message(
         self,
         chat_id: int,
         message: ParsedMessage,
         message_id: int | None = None,
+        request_key: str | None = None,
     ) -> str | None:
         kind = message.kind
         argument = message.argument
@@ -192,13 +309,25 @@ class BridgeService:
             return self.prepare_new_task(chat_id)
         if kind in {"new", "continue"}:
             mode = self._mode_for_message(chat_id, message)
-            response = self.submit_task(chat_id, argument, mode, message_id=message_id)
+            response = self.submit_task(
+                chat_id,
+                argument,
+                mode,
+                message_id=message_id,
+                request_key=request_key,
+            )
             if response is None:
                 self._set_pending_mode(chat_id, None)
             return response
         if kind == "unknown":
             return "Unknown command. Send /help for usage."
-        response = self.submit_task(chat_id, argument, "continue", message_id=message_id)
+        response = self.submit_task(
+            chat_id,
+            argument,
+            "continue",
+            message_id=message_id,
+            request_key=request_key,
+        )
         if response is None:
             self._set_pending_mode(chat_id, None)
         return response
@@ -374,12 +503,15 @@ class BridgeService:
         return self.store.chat_ids()
 
     def _send_session_message(self, chat_id: int, text: str) -> None:
-        if self.telegram is None:
-            return
         delivery_mode = self._session_delivery_mode()
         if delivery_mode == "suppress":
             return
-        self.telegram.send_message(chat_id, text, disable_notification=(delivery_mode == "silent"))
+        self._send_message(
+            chat_id,
+            text,
+            disable_notification=(delivery_mode == "silent"),
+            dedupe_key=f"session:{chat_id}:{self._text_fingerprint(text)}",
+        )
 
     def _session_delivery_mode(self) -> str:
         mode = self.config.codex_sessions.desktop_active_mode
@@ -410,11 +542,13 @@ class BridgeService:
             )
             inline_keyboard = self._project_keyboard(update.chat_id, action="new")
         if response and self.telegram is not None:
-            self.telegram.send_message(
+            callback_kind = "project" if action == "project" else "new"
+            self._send_message(
                 update.chat_id,
                 response,
                 reply_to_message_id=update.message_id,
                 inline_keyboard=inline_keyboard,
+                dedupe_key=f"telegram:callback:{callback_kind}:{update.callback_query_id or update.message_id}",
             )
 
     def _record_session_notification(self, chat_id: int, notification: SessionNotification) -> None:
@@ -430,16 +564,32 @@ class BridgeService:
             return
         self._remember_project(chat_id, project, pin=None)
 
-    def submit_task(self, chat_id: int, prompt: str, mode: str, message_id: int | None = None) -> str | None:
+    def submit_task(
+        self,
+        chat_id: int,
+        prompt: str,
+        mode: str,
+        message_id: int | None = None,
+        request_key: str | None = None,
+    ) -> str | None:
         prompt = prompt.strip()
         if not prompt:
             return f"Usage: /{mode} <prompt>"
+        if request_key:
+            existing = self.store.find_task_by_request_key(request_key)
+            if existing is not None:
+                self.logger.info(
+                    "skipping duplicate Telegram task request request_key=%s task_id=%s",
+                    request_key,
+                    existing.task_id,
+                )
+                return None
         if self.store.running_task_for_chat(chat_id) is not None:
             return "A task is already running for this chat. Wait for it to finish before starting another."
 
         project = self._resolve_project(chat_id)
         self._validate_project_runtime(project)
-        task = self._enqueue_task(chat_id, project, prompt, mode)
+        task = self._enqueue_task(chat_id, project, prompt, mode, request_key=request_key)
         self._executor.submit(self._execute_task, task.task_id, project, prompt, mode, chat_id, message_id, True)
         return None
 
@@ -451,10 +601,18 @@ class BridgeService:
             raise RuntimeError("A task is already running for this chat.")
         project = self._resolve_project(chat_id, project_name)
         self._validate_project_runtime(project)
-        task = self._enqueue_task(chat_id, project, prompt, mode)
+        task = self._enqueue_task(chat_id, project, prompt, mode, request_key=None)
         return self._execute_task(task.task_id, project, prompt, mode, chat_id, message_id=None, notify=False)
 
-    def _enqueue_task(self, chat_id: int, project: Project, prompt: str, mode: str) -> TaskRun:
+    def _enqueue_task(
+        self,
+        chat_id: int,
+        project: Project,
+        prompt: str,
+        mode: str,
+        *,
+        request_key: str | None = None,
+    ) -> TaskRun:
         task_id = uuid.uuid4().hex
         started_at = time.time()
         task = TaskRun(
@@ -465,6 +623,7 @@ class BridgeService:
             mode=mode,
             status="queued",
             started_at=started_at,
+            request_key=request_key,
         )
         self.store.add_task(task)
         self.store.set_chat_task(chat_id, task_id, last_active_at=started_at)
@@ -503,7 +662,12 @@ class BridgeService:
             self.store.update_task(task)
             self._clear_chat_task(chat_id, task_id)
             if notify:
-                self._notify(chat_id, render_task_notification(task, task.summary), message_id)
+                self._notify(
+                    chat_id,
+                    render_task_notification(task, task.summary),
+                    message_id,
+                    dedupe_key=f"task:{task_id}:final",
+                )
             self.logger.exception("task failed task_id=%s", task_id)
             return task
 
@@ -511,7 +675,12 @@ class BridgeService:
         self._clear_chat_task(chat_id, task_id)
         if notify:
             final_output = result.stdout if result.ok else (result.stderr or result.stdout)
-            self._notify(chat_id, render_task_notification(task, final_output), message_id)
+            self._notify(
+                chat_id,
+                render_task_notification(task, final_output),
+                message_id,
+                dedupe_key=f"task:{task_id}:final",
+            )
         return task
 
     def _task_from_result(self, task: TaskRun, result: RunnerResult) -> TaskRun:
@@ -536,13 +705,83 @@ class BridgeService:
             return
         self.store.set_chat_task(chat_id, None, last_active_at=time.time())
 
-    def _notify(self, chat_id: int, text: str, message_id: int | None) -> None:
+    def _notify(
+        self,
+        chat_id: int,
+        text: str,
+        message_id: int | None,
+        *,
+        dedupe_key: str | None = None,
+        inline_keyboard: list[list[dict[str, str]]] | None = None,
+        disable_notification: bool = False,
+    ) -> None:
+        self._send_message(
+            chat_id,
+            text,
+            reply_to_message_id=message_id,
+            inline_keyboard=inline_keyboard,
+            disable_notification=disable_notification,
+            dedupe_key=dedupe_key,
+        )
+
+    def _send_message(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        reply_to_message_id: int | None = None,
+        inline_keyboard: list[list[dict[str, str]]] | None = None,
+        disable_notification: bool = False,
+        dedupe_key: str | None = None,
+    ) -> None:
+        if self.telegram is None:
+            return
+        sender_thread = self._sender_thread
+        if sender_thread is None or not sender_thread.is_alive():
+            self._send_message_now(
+                chat_id,
+                text,
+                reply_to_message_id=reply_to_message_id,
+                inline_keyboard=inline_keyboard,
+                disable_notification=disable_notification,
+            )
+            return
+        try:
+            self._runtime_store.enqueue_message(
+                chat_id=chat_id,
+                text=text,
+                reply_to_message_id=reply_to_message_id,
+                inline_keyboard=inline_keyboard,
+                disable_notification=disable_notification,
+                dedupe_key=dedupe_key,
+            )
+        except Exception:
+            self.logger.exception("failed to enqueue Telegram response chat_id=%s", chat_id)
+
+    def _send_message_now(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        reply_to_message_id: int | None = None,
+        inline_keyboard: list[list[dict[str, str]]] | None = None,
+        disable_notification: bool = False,
+    ) -> None:
         if self.telegram is None:
             return
         try:
-            self.telegram.send_message(chat_id, text, reply_to_message_id=message_id)
+            self.telegram.send_message(
+                chat_id,
+                text,
+                reply_to_message_id=reply_to_message_id,
+                inline_keyboard=inline_keyboard,
+                disable_notification=disable_notification,
+            )
         except Exception:
             self.logger.exception("failed to send Telegram response chat_id=%s", chat_id)
+
+    def _text_fingerprint(self, text: str) -> str:
+        return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
 
     def _recent_session_rows(self) -> list[tuple[str, str, float]]:
         db_path = self.config.codex_sessions.state_db_path.expanduser()

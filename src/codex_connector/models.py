@@ -63,6 +63,7 @@ class TaskRun:
     stdout_tail: str = ""
     stderr_tail: str = ""
     error: str | None = None
+    request_key: str | None = None
 
 
 @dataclass(slots=True)
