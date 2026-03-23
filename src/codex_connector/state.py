@@ -45,7 +45,8 @@ class StateStore:
                     current_task_id TEXT,
                     active_project_name TEXT,
                     pinned_project_name TEXT,
-                    pending_mode TEXT
+                    pending_mode TEXT,
+                    intermediate_updates_enabled INTEGER NOT NULL DEFAULT 1
                 );
 
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -76,6 +77,14 @@ class StateStore:
                 WHERE request_key IS NOT NULL;
                 """
             )
+            columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(chats)").fetchall()}
+            if "intermediate_updates_enabled" not in columns:
+                conn.execute(
+                    """
+                    ALTER TABLE chats
+                    ADD COLUMN intermediate_updates_enabled INTEGER NOT NULL DEFAULT 1
+                    """
+                )
             conn.commit()
         finally:
             conn.close()
@@ -119,9 +128,10 @@ class StateStore:
                         current_task_id,
                         active_project_name,
                         pinned_project_name,
-                        pending_mode
+                        pending_mode,
+                        intermediate_updates_enabled
                     )
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         int(raw["chat_id"]),
@@ -132,6 +142,7 @@ class StateStore:
                         raw.get("active_project_name"),
                         raw.get("pinned_project_name"),
                         raw.get("pending_mode"),
+                        (1 if raw.get("intermediate_updates_enabled", True) else 0),
                     ),
                 )
             for raw in tasks:
@@ -192,6 +203,7 @@ class StateStore:
             active_project_name=row["active_project_name"],
             pinned_project_name=row["pinned_project_name"],
             pending_mode=row["pending_mode"],
+            intermediate_updates_enabled=bool(row["intermediate_updates_enabled"]),
         )
 
     @staticmethod
@@ -226,9 +238,10 @@ class StateStore:
                     current_task_id,
                     active_project_name,
                     pinned_project_name,
-                    pending_mode
+                    pending_mode,
+                    intermediate_updates_enabled
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     chat.chat_id,
@@ -239,6 +252,7 @@ class StateStore:
                     chat.active_project_name,
                     chat.pinned_project_name,
                     chat.pending_mode,
+                    (1 if chat.intermediate_updates_enabled else 0),
                 ),
             )
             conn.commit()
@@ -311,6 +325,7 @@ class StateStore:
                         "active_project_name": chat.active_project_name,
                         "pinned_project_name": chat.pinned_project_name,
                         "pending_mode": chat.pending_mode,
+                        "intermediate_updates_enabled": chat.intermediate_updates_enabled,
                     }
                     for chat in self._all_chats()
                 },
@@ -405,6 +420,7 @@ class StateStore:
                     current_task_id=current_task_id,
                     active_project_name=active_project_name,
                     pinned_project_name=(None if pinned_project_name is _UNSET else pinned_project_name),
+                    intermediate_updates_enabled=True,
                 )
             else:
                 if project_name is not None:
@@ -446,6 +462,15 @@ class StateStore:
             if chat is None:
                 raise KeyError(f"unknown chat {chat_id}")
             chat.pending_mode = pending_mode
+            self._write_chat(chat)
+
+    def set_chat_intermediate_updates_enabled(self, chat_id: int, enabled: bool) -> None:
+        with self._lock:
+            self._ensure_loaded()
+            chat = self.get_chat(chat_id)
+            if chat is None:
+                raise KeyError(f"unknown chat {chat_id}")
+            chat.intermediate_updates_enabled = bool(enabled)
             self._write_chat(chat)
 
     def update_task(self, task: TaskRun) -> None:

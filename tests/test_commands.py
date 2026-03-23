@@ -18,6 +18,11 @@ class CommandParsingTests(unittest.TestCase):
         self.assertEqual(parsed.kind, "project")
         self.assertEqual(parsed.argument, "app")
 
+    def test_parse_updates(self) -> None:
+        parsed = parse_message("/updates off")
+        self.assertEqual(parsed.kind, "updates")
+        self.assertEqual(parsed.argument, "off")
+
     def test_parse_plain_text_as_continue(self) -> None:
         parsed = parse_message("please tighten the tests")
         self.assertEqual(parsed.kind, "continue")
@@ -28,6 +33,7 @@ class CommandParsingTests(unittest.TestCase):
         text = render_help_text()
         self.assertIn("/new [prompt]", text)
         self.assertIn("/status", text)
+        self.assertIn("/updates [on|off]", text)
         self.assertIn("/project [name]", text)
 
 

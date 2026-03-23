@@ -45,6 +45,7 @@ def render_help_text() -> str:
         "/continue <prompt>  continue the latest session\n"
         "/last            show the latest task for the active project\n"
         "/status          show active project and running state\n"
+        "/updates [on|off]  toggle intermediate session updates\n"
         "/help            show this message\n"
         "Plain text is treated as /continue."
     )

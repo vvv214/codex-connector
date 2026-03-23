@@ -41,6 +41,7 @@ class StateStoreTests(unittest.TestCase):
             chat = restored.get_chat(1)
             self.assertIsNotNone(chat)
             self.assertEqual(chat.project_name, "alpha")
+            self.assertTrue(chat.intermediate_updates_enabled)
             task = restored.last_task_for_project("alpha")
             self.assertIsNotNone(task)
             self.assertEqual(task.task_id, "task-1")
@@ -86,7 +87,8 @@ class StateStoreTests(unittest.TestCase):
                       "current_task_id": "task-5",
                       "active_project_name": "alpha",
                       "pinned_project_name": null,
-                      "pending_mode": "new"
+                      "pending_mode": "new",
+                      "intermediate_updates_enabled": false
                     }
                   },
                   "tasks": [
@@ -120,6 +122,7 @@ class StateStoreTests(unittest.TestCase):
             self.assertIsNotNone(chat)
             assert chat is not None
             self.assertEqual(chat.pending_mode, "new")
+            self.assertFalse(chat.intermediate_updates_enabled)
             task = store.get_task("task-5")
             self.assertIsNotNone(task)
             assert task is not None
@@ -172,6 +175,57 @@ class StateStoreTests(unittest.TestCase):
             chat = restored.get_chat(8)
             self.assertIsNotNone(chat)
             self.assertEqual(chat.pending_mode, "new")
+
+    def test_set_chat_intermediate_updates_enabled_persists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "state.json"
+            store = StateStore(path)
+            store.load()
+            store.set_chat(ChatState(chat_id=9, project_name="alpha", repo_path="/repo-a", last_active_at=1.0))
+
+            store.set_chat_intermediate_updates_enabled(9, False)
+
+            restored = StateStore(path)
+            restored.load()
+            chat = restored.get_chat(9)
+            self.assertIsNotNone(chat)
+            assert chat is not None
+            self.assertFalse(chat.intermediate_updates_enabled)
+
+    def test_sqlite_schema_migration_adds_intermediate_updates_column(self) -> None:
+        import sqlite3 as _sqlite3
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.sqlite3"
+            # Create an old-schema DB without the intermediate_updates_enabled column
+            conn = _sqlite3.connect(str(db_path))
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.executescript(
+                """
+                CREATE TABLE chats (
+                    chat_id INTEGER PRIMARY KEY,
+                    project_name TEXT NOT NULL,
+                    repo_path TEXT NOT NULL,
+                    last_active_at REAL NOT NULL,
+                    current_task_id TEXT,
+                    active_project_name TEXT,
+                    pinned_project_name TEXT,
+                    pending_mode TEXT
+                );
+                INSERT INTO chats(chat_id, project_name, repo_path, last_active_at)
+                VALUES (10, 'alpha', '/repo-a', 1.0);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            store = StateStore(db_path)
+            store.load()
+
+            chat = store.get_chat(10)
+            self.assertIsNotNone(chat)
+            assert chat is not None
+            self.assertTrue(chat.intermediate_updates_enabled)
 
     def test_get_recent_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

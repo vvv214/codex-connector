@@ -283,7 +283,7 @@ class CodexSessionMonitor:
         include_user_messages: bool,
         target_chat_ids: Callable[[], Sequence[int]],
         send_message: Callable[[int, str], None],
-        on_notification: Callable[[int, SessionNotification], None] | None = None,
+        on_notification: Callable[[int, SessionNotification], bool | None] | None = None,
         logger: logging.Logger,
         agent_update_interval_seconds: float = 60.0,
     ):
@@ -472,9 +472,12 @@ class CodexSessionMonitor:
             if self._was_recently_delivered(chat_id, notification):
                 continue
             try:
+                should_send = True
                 if self._on_notification is not None:
-                    self._on_notification(chat_id, notification)
-                self._send_message(chat_id, text)
+                    result = self._on_notification(chat_id, notification)
+                    should_send = result is not False
+                if should_send:
+                    self._send_message(chat_id, text)
             except Exception:
                 self._logger.exception(
                     "failed to send session notification chat_id=%s thread_id=%s",

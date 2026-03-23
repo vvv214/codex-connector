@@ -100,6 +100,7 @@ class TelegramClientTests(unittest.TestCase):
         self.assertTrue(url.endswith("/setMyCommands"))
         commands = json.loads(payload["commands"])
         self.assertEqual(commands[0]["command"], "project")
+        self.assertIn("updates", [command["command"] for command in commands])
         self.assertEqual(commands[-1]["command"], "help")
 
 

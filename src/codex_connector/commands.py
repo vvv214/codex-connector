@@ -22,6 +22,6 @@ def parse_message(text: str) -> ParsedMessage:
     head, _, tail = stripped.partition(" ")
     command = head[1:].lower()
     argument = tail.strip()
-    if command in {"project", "new", "continue", "last", "status", "help"}:
+    if command in {"project", "new", "continue", "last", "status", "updates", "help"}:
         return ParsedMessage(kind=command, argument=argument, raw_text=raw)
     return ParsedMessage(kind="unknown", argument=argument, raw_text=raw)

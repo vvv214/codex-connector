@@ -28,6 +28,7 @@ class TelegramBotClient:
         ("continue", "Continue the latest session"),
         ("last", "Show the latest task"),
         ("status", "Show active project and running state"),
+        ("updates", "Toggle intermediate session updates"),
         ("help", "Show help"),
     )
 

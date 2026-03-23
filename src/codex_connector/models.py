@@ -46,6 +46,7 @@ class ChatState:
     active_project_name: str | None = None
     pinned_project_name: str | None = None
     pending_mode: str | None = None
+    intermediate_updates_enabled: bool = True
 
 
 @dataclass(slots=True)

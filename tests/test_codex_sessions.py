@@ -15,6 +15,7 @@ if str(SRC) not in sys.path:
 from codex_connector.codex_sessions import (
     CodexSessionMonitor,
     CodexThreadSnapshot,
+    SessionNotification,
     format_notification,
     parse_rollout_line,
 )
@@ -534,6 +535,40 @@ class CodexSessionTests(unittest.TestCase):
             monitor.poll_once()
 
             self.assertEqual(collector.calls, 1)
+
+    def test_on_notification_can_suppress_agent_messages_only(self) -> None:
+        collector = Collector()
+        monitor = CodexSessionMonitor(
+            state_db_path=Path("/tmp/unused.sqlite"),
+            poll_interval_seconds=0.1,
+            include_user_messages=False,
+            target_chat_ids=lambda: [123],
+            send_message=collector.send,
+            on_notification=lambda _chat_id, notification: notification.event_type != "agent_message",
+            logger=logging.getLogger("test.codex_sessions.filter"),
+            agent_update_interval_seconds=0.0,
+        )
+
+        monitor._deliver(
+            SessionNotification(
+                thread_id="thread-1",
+                workspace="example-project",
+                title="Live update",
+                event_type="agent_message",
+            )
+        )
+        monitor._deliver(
+            SessionNotification(
+                thread_id="thread-1",
+                workspace="example-project",
+                title="Done",
+                event_type="task_complete",
+                body="Final answer",
+            )
+        )
+
+        self.assertEqual(len(collector.messages), 1)
+        self.assertIn("🟢 [example-project] Done", collector.messages[0][1])
 
 
 if __name__ == "__main__":

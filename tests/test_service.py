@@ -234,6 +234,84 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(store.get_chat(42).project_name, "beta")
             self.assertIsNone(store.get_chat(42).pinned_project_name)
 
+    def test_updates_command_toggles_intermediate_session_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "repo").mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                """
+                {
+                  "projects": [{"name": "alpha", "repo_path": "./repo"}]
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            store = StateStore(root / "state.json")
+            store.load()
+            service = BridgeService(config=config, store=store, adapter=FakeAdapter())
+
+            status_before = service.handle_message(7, "/updates")
+            status_after = service.handle_message(7, "/updates off")
+
+            self.assertIn("Intermediate session updates: on", str(status_before))
+            self.assertIn("now off", str(status_after))
+            self.assertFalse(store.get_chat(7).intermediate_updates_enabled)
+
+    def test_record_session_notification_can_suppress_agent_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "repo").mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                """
+                {
+                  "projects": [{"name": "alpha", "repo_path": "./repo"}]
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            store = StateStore(root / "state.json")
+            store.load()
+            store.set_chat(
+                ChatState(
+                    chat_id=7,
+                    project_name="alpha",
+                    repo_path=str((root / "repo").resolve()),
+                    last_active_at=1.0,
+                    intermediate_updates_enabled=False,
+                )
+            )
+            service = BridgeService(config=config, store=store, adapter=FakeAdapter())
+
+            from codex_connector.codex_sessions import SessionNotification
+
+            suppressed = service._record_session_notification(
+                7,
+                SessionNotification(
+                    thread_id="thread-1",
+                    workspace="alpha",
+                    title="Midway update",
+                    event_type="agent_message",
+                    repo_path=str((root / "repo").resolve()),
+                ),
+            )
+            allowed = service._record_session_notification(
+                7,
+                SessionNotification(
+                    thread_id="thread-1",
+                    workspace="alpha",
+                    title="Done",
+                    event_type="task_complete",
+                    repo_path=str((root / "repo").resolve()),
+                ),
+            )
+
+            self.assertFalse(suppressed)
+            self.assertTrue(allowed)
+
     def test_session_message_is_silent_when_desktop_is_active(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

@@ -303,6 +303,8 @@ class BridgeService:
             return self.render_status(chat_id)
         if kind == "last":
             return self.render_last(chat_id)
+        if kind == "updates":
+            return self.configure_intermediate_updates(chat_id, argument)
         if kind == "project":
             return self.switch_project(chat_id, argument)
         if kind == "new" and not argument:
@@ -473,6 +475,30 @@ class BridgeService:
         chat = self._ensure_chat_state(chat_id)
         return render_last_task(self.store.last_task_for_project(self._routed_project_name(chat)))
 
+    def configure_intermediate_updates(self, chat_id: int, argument: str) -> str:
+        chat = self._ensure_chat_state(chat_id)
+        normalized = argument.strip().lower()
+        if normalized in {"", "status"}:
+            state = "on" if chat.intermediate_updates_enabled else "off"
+            return (
+                f"Intermediate session updates: {state}.\n"
+                "Use /updates on or /updates off."
+            )
+
+        if normalized in {"on", "enable", "enabled"}:
+            enabled = True
+        elif normalized in {"off", "disable", "disabled"}:
+            enabled = False
+        else:
+            return "Usage: /updates [on|off]"
+
+        self.store.set_chat_intermediate_updates_enabled(chat_id, enabled)
+        state = "on" if enabled else "off"
+        return (
+            f"Intermediate session updates are now {state}.\n"
+            "Started/completed notifications and final task results stay on."
+        )
+
     def render_project_sessions(self, chat_id: int, prefix: str | None = None) -> str:
         chat = self.store.get_chat(chat_id)
         return render_project_sessions(
@@ -551,7 +577,7 @@ class BridgeService:
                 dedupe_key=f"telegram:callback:{callback_kind}:{update.callback_query_id or update.message_id}",
             )
 
-    def _record_session_notification(self, chat_id: int, notification: SessionNotification) -> None:
+    def _record_session_notification(self, chat_id: int, notification: SessionNotification) -> bool:
         project = self.config.project_by_repo_path(notification.repo_path)
         if project is None:
             project = self.config.project_by_name(notification.workspace)
@@ -561,8 +587,13 @@ class BridgeService:
                     project = candidate
                     break
         if project is None:
-            return
+            return True
         self._remember_project(chat_id, project, pin=None)
+        if notification.event_type == "agent_message":
+            chat = self.store.get_chat(chat_id)
+            if chat is not None and not chat.intermediate_updates_enabled:
+                return False
+        return True
 
     def submit_task(
         self,
